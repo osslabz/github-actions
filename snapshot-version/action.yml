@@ -1,0 +1,56 @@
+name: snapshot-version
+description: >
+  Gives a branch's build a Maven version of its own and applies it to the reactor, so that
+  every branch can publish a snapshot without standing on another branch's coordinate.
+
+inputs:
+  default-branch:
+    description: >
+      The branch that keeps the plain version out of the pom, which is the coordinate a
+      downstream project means when it depends on this project's snapshots. Every other
+      branch folds its name into that version.
+    default: dev
+  pom:
+    description: The reactor's root pom, read for the version and rewritten with the new one.
+    default: pom.xml
+  branch:
+    description: The branch to derive from. The default is the branch the workflow runs on.
+    default: ${{ github.ref_name }}
+
+outputs:
+  version:
+    description: The version the poms now carry.
+    value: ${{ steps.derive.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: derive
+      id: derive
+      shell: bash
+      env:
+        POM: ${{ inputs.pom }}
+        BRANCH: ${{ inputs.branch }}
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+      run: |
+        version="$("${{ github.action_path }}/branch-version.sh" "$POM" "$BRANCH" "$DEFAULT_BRANCH")"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "publishing $version"
+
+    # The plugin is named in full rather than by its `versions:` prefix, so that no consuming
+    # repo has to pin it and an unpinned prefix cannot resolve whatever is latest that day.
+    #
+    # updateBuildOutputTimestampPolicy: the plugin otherwise rewrites
+    # project.build.outputTimestamp to this run's clock, which is where the fixed instant a
+    # reproducible build needs lives. Reproducibility breaks silently without this.
+    - name: apply
+      shell: bash
+      env:
+        VERSION: ${{ steps.derive.outputs.version }}
+      run: |
+        if [ -x ./mvnw ]; then maven=./mvnw; else maven=mvn; fi
+        "$maven" --batch-mode org.codehaus.mojo:versions-maven-plugin:2.22.0:set \
+          -DnewVersion="$VERSION" \
+          -DprocessAllModules=true \
+          -DgenerateBackupPoms=false \
+          -DupdateBuildOutputTimestampPolicy=never
