@@ -63,6 +63,26 @@ expect_version dev "0.2.1-dev-SNAPSHOT" main
 echo "checking dev is what a caller that names no branch gets"
 expect_version main "0.2.1-main-SNAPSHOT"
 
+# A Spring Boot app's root pom inherits spring-boot-starter-parent. The parent's version is
+# the first one in the file and is not the project's.
+echo "checking the parent's version is not mistaken for the project's"
+cat > "$POM" <<'POM'
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.4</version>
+    </parent>
+    <groupId>net.osslabz</groupId>
+    <artifactId>sandbox-service</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+</project>
+POM
+expect_version dev "0.0.1-SNAPSHOT"
+expect_version feat/thing "0.0.1-feat-thing-SNAPSHOT"
+write_pom "0.2.1-SNAPSHOT"
+
 echo "checking a branch name that is all separators is refused"
 expect_failure "a branch that slugs to nothing" "no usable version" "$POM" "///"
 
