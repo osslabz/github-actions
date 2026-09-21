@@ -1,0 +1,234 @@
+name: release
+
+# Releases a Maven project from dev. README.md gives the caller and the reason for each step.
+
+on:
+  workflow_call:
+    inputs:
+      publish-target:
+        description: Where release:perform deploys, `central` (signed, through the Central Portal) or `github-packages`.
+        required: true
+        type: string
+      maven-profiles:
+        description: Profiles for release:prepare's build and for release:perform, comma-separated.
+        required: true
+        type: string
+      release-arguments:
+        description: Passed as -Darguments, so it reaches the builds release:prepare and release:perform fork, e.g. -DskipTests.
+        required: false
+        type: string
+        default: ''
+      release-version:
+        description: The version to release (x.y.z). Empty releases the version the commit subjects imply.
+        required: false
+        type: string
+        default: ''
+      java-version:
+        description: The JDK the release builds with.
+        required: false
+        type: string
+        default: '25'
+    secrets:
+      central-username:
+        description: Central Portal token user name (publish-target central).
+        required: false
+      central-token:
+        description: Central Portal token password (publish-target central).
+        required: false
+      gpg-private-key:
+        description: ASCII-armored key that signs the artifacts (publish-target central).
+        required: false
+      gpg-passphrase:
+        description: Passphrase of gpg-private-key (publish-target central).
+        required: false
+      packages-token:
+        description: Token that deploys to GitHub Packages and reads the owner's other packages (publish-target github-packages).
+        required: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # central-publishing-maven-plugin waits up to 30 minutes for Central to publish.
+    timeout-minutes: 60
+    # A second dispatch waits for this one rather than racing it to the push. It then checks
+    # out the SHA dev was at when it was dispatched, not this run's result, so it is the
+    # preflight's dev-moved check below, not this alone, that refuses it.
+    concurrency:
+      group: release
+      cancel-in-progress: false
+
+    permissions:
+      contents: write
+
+    steps:
+      # workflow_dispatch has no branch filter; a failing step rather than a job-level `if`,
+      # which would report a mis-dispatch as a green skip.
+      - name: guard-release-ref
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/dev" ]; then
+            echo "::error::releases run on dev only; this run was dispatched from $GITHUB_REF"
+            exit 1
+          fi
+
+      # No `ref`: maven-scm pushes the release commits to the branch checked out, which is dev.
+      # Full history and tags for the version policy and the preflight.
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Everything that would otherwise fail only after the tag is public or the artifacts are
+      # published. Reads whether each secret is set, never its value.
+      - name: preflight
+        env:
+          PUBLISH_TARGET: ${{ inputs.publish-target }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
+          HAS_CENTRAL_SECRETS: ${{ secrets.central-username != '' && secrets.central-token != '' && secrets.gpg-private-key != '' && secrets.gpg-passphrase != '' }}
+          HAS_PACKAGES_TOKEN: ${{ secrets.packages-token != '' }}
+        run: |
+          # A second dispatch, queued behind this one by the job's own concurrency group,
+          # checks out the SHA dev was at when IT was dispatched -- not this run's result --
+          # so it cannot see that dev has already moved. Caught here, before the build, rather
+          # than surfacing much later as a push failure inside release:prepare.
+          remote_dev="$(git ls-remote origin refs/heads/dev | cut -f1)"
+          if [ "$remote_dev" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::dev moved since this run was dispatched; dispatch again"
+            exit 1
+          fi
+
+          case "$PUBLISH_TARGET" in
+            central)
+              if [ "$HAS_CENTRAL_SECRETS" != true ]; then
+                echo "::error::publish-target central needs the secrets central-username, central-token, gpg-private-key and gpg-passphrase"
+                exit 1
+              fi
+              ;;
+            github-packages)
+              if [ "$HAS_PACKAGES_TOKEN" != true ]; then
+                echo "::error::publish-target github-packages needs the secret packages-token"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::publish-target is '${PUBLISH_TARGET}'; it must be central or github-packages"
+              exit 1
+              ;;
+          esac
+
+          if [ -n "$RELEASE_VERSION" ]; then
+            if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::release-version '${RELEASE_VERSION}' is not x.y.z"
+              exit 1
+            fi
+            if git rev-parse --verify --quiet "refs/tags/${RELEASE_VERSION}" > /dev/null; then
+              echo "::error::tag ${RELEASE_VERSION} already exists"
+              exit 1
+            fi
+          fi
+
+          # A release leaves exactly one commit after its tag, the next development version.
+          last_tag="$(git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' 2> /dev/null || true)"
+          if [ -n "$last_tag" ] && [ "$(git rev-list --no-merges --count "${last_tag}..HEAD")" -le 1 ]; then
+            echo "::error::nothing to release: no commit since ${last_tag} but the next development version"
+            exit 1
+          fi
+
+          # A repository without main gets it from this release's fast-forward.
+          if git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null; then
+            if ! git merge-base --is-ancestor refs/remotes/origin/main HEAD; then
+              echo "::error::main is not an ancestor of dev, so it cannot fast-forward to the release"
+              exit 1
+            fi
+            if [ -n "$(git rev-list --merges refs/remotes/origin/main..HEAD)" ]; then
+              echo "::error::dev has merge commits main lacks, and main's linear-history rule refuses them; a repository admin fast-forwards main past them first"
+              exit 1
+            fi
+          fi
+
+      - name: setup-jdk
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: 'temurin'
+          cache: maven
+          # GitHub Packages keeps setup-java's defaults: server `github`, GITHUB_ACTOR, GITHUB_TOKEN.
+          server-id: ${{ inputs.publish-target == 'central' && 'central' || 'github' }}
+          server-username-env-var: ${{ inputs.publish-target == 'central' && 'MAVEN_USERNAME' || 'GITHUB_ACTOR' }}
+          server-password-env-var: ${{ inputs.publish-target == 'central' && 'MAVEN_PASSWORD' || 'GITHUB_TOKEN' }}
+          # Empty for github-packages, which then imports no key.
+          gpg-private-key: ${{ secrets.gpg-private-key }}
+          # The name maven-gpg-plugin reads by default, so setup-java adds nothing to settings.xml.
+          gpg-passphrase-env-var: MAVEN_GPG_PASSPHRASE
+
+      # The identity checkout documents for commits made with the built-in token.
+      - name: configure-git-user
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      # The profiles go on the command line, not only into the pom's releaseProfiles:
+      # release:prepare passes them to its own `clean verify`, so javadoc and signing fail
+      # before anything is committed, tagged or pushed. That build is the release's only
+      # verification before the push; release:perform builds the tag once more to deploy it.
+      # GITHUB_TOKEN carries the packages token: setup-java's `github` server reads it, and so
+      # does a pom whose scm URL needs credentials for release:perform's clone.
+      - name: release-prepare-perform
+        env:
+          MAVEN_PROFILES: ${{ inputs.maven-profiles }}
+          RELEASE_ARGUMENTS: ${{ inputs.release-arguments }}
+          RELEASE_VERSION: ${{ inputs.release-version }}
+          MAVEN_USERNAME: ${{ secrets.central-username }}
+          MAVEN_PASSWORD: ${{ secrets.central-token }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.gpg-passphrase }}
+          GITHUB_TOKEN: ${{ secrets.packages-token }}
+        run: |
+          args=(--batch-mode -P "$MAVEN_PROFILES")
+          if [ -n "$RELEASE_VERSION" ]; then
+            args+=("-DreleaseVersion=${RELEASE_VERSION}")
+          fi
+          if [ -n "$RELEASE_ARGUMENTS" ]; then
+            args+=("-Darguments=${RELEASE_ARGUMENTS}")
+          fi
+          mvn "${args[@]}" release:prepare release:perform
+
+      # release:prepare leaves HEAD on the next development version, one commit after the tag.
+      - name: released-tag
+        id: released-tag
+        run: |
+          tag="$(git describe --tags --exact-match HEAD~1)"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      # main only follows the published tag, and without --force git accepts nothing but a
+      # fast-forward. The tag is annotated and a branch cannot point at a tag object. First
+      # after the publish, so a failing release-notes step cannot leave main behind.
+      - name: fast-forward-main
+        env:
+          TAG: ${{ steps.released-tag.outputs.tag }}
+        run: |
+          tag_commit="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          git push origin "${tag_commit}:refs/heads/main"
+
+      # --verify-tag: fails rather than creating the tag if the pushed one is missing.
+      - name: create-github-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.released-tag.outputs.tag }}
+        run: gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+
+  # The release pushed dev with GITHUB_TOKEN, which starts no push run, so the next snapshot
+  # is built on request. A job of its own, so the Maven build never holds `actions: write`.
+  build-next-snapshot:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      actions: write
+
+    steps:
+      - name: dispatch-build-on-push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run build-on-push.yml --ref dev

@@ -3,16 +3,38 @@
 ![GitHub](https://img.shields.io/github/license/osslabz/github-actions)
 ![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/osslabz/github-actions/test.yml?branch=main&label=tests&logo=git)
 
-Shared composite actions for the Java build pipelines across `osslabz` and `peekaboot-org`.
-Public because a private repository's actions cannot be used from another organisation, nor
-from a public repository at all.
+Shared CI for Maven projects across the owner's organisations: composite actions and reusable
+workflows. Public because a private repository's actions and workflows cannot be used from
+another organisation, nor from a public repository at all.
 
 | | Kind | Called from the project's |
 | --- | --- | --- |
 | [snapshot-version](#snapshot-version) | composite action | `build-on-push.yml` |
 | [commit-subject-check](#commit-subject-check) | composite action | `build-on-push.yml` |
+| [release.yml](#release) | reusable workflow | `release.yml` |
 
 Callers use `@v1`, a tag that moves with the latest `v1.x`.
+
+## The project side
+
+A project integrates on `dev`, its default branch, and releases from there; `main` only ever
+fast-forwards to the latest release tag. It keeps two workflows for that:
+
+- `.github/workflows/build-on-push.yml`, its own, because builds differ too much to share
+  (images, skipped tests, extra tools). It runs on `push` to every branch but `main` and on
+  `workflow_dispatch`: the release workflow finds it by this file name and dispatches it.
+- `.github/workflows/release.yml`, a few lines calling the reusable workflow.
+
+The pom carries maven-release-plugin with
+[conventional-commits-version-policy](https://github.com/nielsbasjes/conventional-commits-maven-release),
+`tagNameFormat` `@{project.version}`, and release commits with conventional subjects like
+every other commit:
+
+```xml
+<scmCommentPrefix>chore(release):</scmCommentPrefix>
+<scmReleaseCommitComment>@{prefix} set version to @{releaseLabel}</scmReleaseCommitComment>
+<scmDevelopmentCommitComment>@{prefix} prepare next development iteration</scmDevelopmentCommitComment>
+```
 
 ## snapshot-version
 
@@ -103,6 +125,105 @@ lies beyond. Dependabot's commits pass when `dependabot.yml` sets
 | `default-branch` | `dev` | The branch a new or force-pushed branch is compared against. |
 | `before` | `github.event.before` | The branch's commit before the push. |
 | `after` | `github.event.after` | The branch's commit after the push. |
+
+## release
+
+Releases the project from `dev`: `release:prepare` commits the release version, tags it and
+commits the next development version; `release:perform` publishes the tag; `main` follows the
+tag; a GitHub release gets generated notes; and `build-on-push` runs on `dev` for the next
+snapshot. The caller, publishing to Central:
+
+```yaml
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      releaseVersion:
+        description: Overrides the version the commit subjects imply (x.y.z). Empty keeps it.
+        required: false
+        type: string
+
+jobs:
+  release:
+    # Covers every job of the shared workflow; each job takes only what it needs.
+    permissions:
+      contents: write
+      actions: write
+    uses: osslabz/github-actions/.github/workflows/release.yml@v1
+    with:
+      publish-target: central
+      maven-profiles: osslabz-release,osslabz-publish
+      release-version: ${{ inputs.releaseVersion }}
+    secrets:
+      central-username: ${{ secrets.OSSRH_USERNAME }}
+      central-token: ${{ secrets.OSSRH_TOKEN }}
+      gpg-private-key: ${{ secrets.OSSRH_GPG_SECRET_KEY }}
+      gpg-passphrase: ${{ secrets.OSSRH_GPG_SECRET_KEY_PASSWORD }}
+```
+
+Publishing to GitHub Packages instead, with tests skipped in the release's builds:
+
+```yaml
+    with:
+      publish-target: github-packages
+      maven-profiles: release
+      release-arguments: -DskipTests
+      release-version: ${{ inputs.releaseVersion }}
+    secrets:
+      packages-token: ${{ secrets.PACKAGES_TOKEN }}
+```
+
+Secrets are passed by name: `secrets: inherit` does not cross organisations, and naming them
+hands the workflow no more than it uses. The caller's `permissions` must cover both jobs,
+because a called workflow can only lower them.
+
+| Input | Default | |
+| --- | --- | --- |
+| `publish-target` | required | `central`: server `central`, signed with the GPG key. `github-packages`: server `github`, no signature. |
+| `maven-profiles` | required | Active in `release:prepare`'s build and in `release:perform`. List the profiles that sign and build javadoc here. |
+| `release-arguments` | empty | Passed as `-Darguments`, which reaches the builds both goals fork, e.g. `-DskipTests` for tests that need live services. A pom that sets `<arguments>` itself wins over it. |
+| `release-version` | empty | `x.y.z` to release instead of what the commit subjects imply, e.g. a deliberate 1.0.0 or a repository whose tags confuse the policy. |
+| `java-version` | `25` | The JDK the release builds with. |
+
+| Secret | For | |
+| --- | --- | --- |
+| `central-username`, `central-token` | `central` | Central Portal user token. |
+| `gpg-private-key`, `gpg-passphrase` | `central` | ASCII-armored signing key and its passphrase. |
+| `packages-token` | `github-packages` | A classic token with `write:packages`; it also reads the owner's other packages, which the job's own token cannot. |
+
+The steps of the `release` job, and why each is there:
+
+| Step | Why |
+| --- | --- |
+| `concurrency: release` | A second dispatch waits for the first instead of racing it to the push. It then checks out the SHA `dev` was at when it was dispatched, not the first run's result, so it is the preflight's dev-moved check, not this alone, that refuses it. |
+| `guard-release-ref` | `workflow_dispatch` has no branch filter. A failing step, not a job `if`, which would report a mis-dispatch as a green skip. |
+| `checkout` | Full history and tags for the version policy and the preflight. No `ref`: maven-scm pushes to the branch checked out, which is `dev`. |
+| `preflight` | Refuses, before anything is tagged or published: `dev` at a different commit than this run checked out, which is what a second dispatch queued behind a completed one sees, since its checkout is pinned to its own dispatch time; a wrong `publish-target` or a missing secret; a malformed or taken `release-version`; nothing committed since the last tag but its next development version (a second dispatch would publish an identical patch release, which Central never deletes); a `main` that `dev` does not contain, or merge commits between them, which main's linear-history rule refuses. |
+| `setup-jdk` | JDK, Maven cache, the server credentials and the signing key in an isolated keyring. |
+| `configure-git-user` | The identity checkout documents for commits made with the built-in token. `git config` rather than an action: nothing third-party runs in the job that holds the keys and the token. |
+| `release-prepare-perform` | The profiles go on the command line, so `release:prepare`'s own `clean verify` builds javadoc and signs before anything is pushed. There is no separate build step: that `clean verify` is it. |
+| `released-tag` | `release:prepare` leaves `HEAD` one commit after the tag; `git describe` names the tag this run made, not the newest one. |
+| `fast-forward-main` | Pushes the tag's commit to `main` without `--force`, so git refuses anything but a fast-forward. Runs before the release notes, so their failure cannot leave `main` behind. |
+| `create-github-release` | `gh release create --verify-tag --generate-notes`: fails rather than create a tag if the pushed one is missing. |
+
+A second job, `build-next-snapshot`, dispatches `build-on-push.yml` on `dev` once the release
+succeeded. The release pushed with `GITHUB_TOKEN`, and pushes made with it start no workflow,
+so without this the next snapshot would wait for the next human push. It is a job of its own
+so that the Maven build never holds `actions: write`.
+
+When a release fails, what it left behind decides the way out. A re-run repeats the workflow at
+the dispatched commit, so after the first push it can only fail at the push again.
+
+| Failed in | State | Way out |
+| --- | --- | --- |
+| guard, preflight, setup, `release:prepare`'s build | nothing pushed | fix the cause, dispatch again |
+| the push of the release commit (dev moved meanwhile) | nothing pushed | dispatch again |
+| the tag push | `dev` has the release commit but no tag, and its pom carries no snapshot, which fails `build-on-push` | commit the next `-SNAPSHOT` on `dev`, then release with `releaseVersion` |
+| `release:perform` | tag and `dev` commits public, artifacts not published | a cause outside the code (credentials, an outage): deploy the tag from a machine holding the key; a cause in the code: the version is burned, fix on `dev` and release the next one. Either way, this run never reached `fast-forward-main`: fast-forward `main` to the tag, create the GitHub release and dispatch `build-on-push` on `dev` by hand |
+| `fast-forward-main` | published | repair `main`, then push the tag's commit to it. This run never reached `create-github-release` or `build-next-snapshot` either: create the GitHub release and dispatch `build-on-push` on `dev` by hand |
+| `create-github-release` | published, `main` moved | run the step's command by hand |
+| `build-next-snapshot` | released | dispatch `build-on-push` on `dev` by hand |
 
 ## Tests
 
