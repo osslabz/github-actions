@@ -1,8 +1,14 @@
 # github-actions
 
+![GitHub](https://img.shields.io/github/license/osslabz/github-actions)
+![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/osslabz/github-actions/test.yml?branch=main&label=tests&logo=git)
+
 Shared composite actions for the Java build pipelines across `osslabz` and `peekaboot-org`.
 Public because a private repository's actions cannot be used from another organisation, nor
 from a public repository at all.
+
+One action so far, used by every Java repository in both organisations. There are no
+releases. Callers pin `@v1`, a tag that moves with the latest `v1.x`.
 
 ## snapshot-version
 
