@@ -140,7 +140,7 @@ jobs:
               exit 1
             fi
             if [ -n "$(git rev-list --merges refs/remotes/origin/main..HEAD)" ]; then
-              echo "::error::dev has merge commits main lacks, and main's linear-history rule refuses them; a repository admin fast-forwards main past them first"
+              echo "::error::dev has merge commits main lacks, and main's linear-history rule refuses them. A repository admin fast-forwards main to dev once, then dispatches again: git fetch origin && git push origin $(git rev-parse HEAD):refs/heads/main"
               exit 1
             fi
           fi
