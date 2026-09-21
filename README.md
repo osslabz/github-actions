@@ -35,7 +35,9 @@ The pom carries maven-release-plugin with
 every other commit:
 
 ```xml
-<scmCommentPrefix>chore(release):</scmCommentPrefix>
+<!-- xml:space="preserve" keeps the trailing space Plexus would otherwise trim;
+     ScmTagPhase concatenates this prefix straight into the tag message. -->
+<scmCommentPrefix xml:space="preserve">chore(release): </scmCommentPrefix>
 <scmReleaseCommitComment>@{prefix} set version to @{releaseLabel}</scmReleaseCommitComment>
 <scmDevelopmentCommitComment>@{prefix} prepare next development iteration</scmDevelopmentCommitComment>
 ```
@@ -78,7 +80,7 @@ The version is also an output:
 
 | Input | Default | |
 | --- | --- | --- |
-| `default-branch` | `dev` | The branch that keeps the plain version. `main` for `bitcoin-commons` and `lnd-rest-client`. |
+| `default-branch` | `dev` | The branch that keeps the plain version. |
 | `pom` | `pom.xml` | The reactor's root pom, read for the version and rewritten with the new one. |
 | `branch` | `github.ref_name` | The branch to derive from. |
 
@@ -112,7 +114,8 @@ digits, `_` and `-` only: what `conventional-commits-version-policy` 1.0.9 parse
 slash, a dot or a comma-separated list would pass a laxer check but not that policy, which would
 then derive a patch from the subject regardless of what it changed. Merge commits are skipped,
 and so are `[release] …` subjects, which the release plugin wrote before release commits became
-conventional and which still follow the last tag in older repositories.
+conventional and which still follow the last tag in older repositories. `git revert` writes
+`Revert "feat: …"`, which fails; reword it to `revert: …`.
 
 Only what the push brought is checked, never older history:
 
@@ -121,13 +124,16 @@ Only what the push brought is checked, never older history:
 | to an existing branch | `before..after` of the push |
 | creating a branch | from where it left `origin/<default-branch>` |
 | force-push to a branch | the same, since the old tip is gone |
-| force-push to the default branch | since the last `x.y.z` tag, what the next release weighs |
+| force-push to the default branch | since the last `x.y.z` tag, what the next release weighs, or all history without one |
 | `workflow_dispatch` and other events | nothing |
 
 A shallow checkout fails the step: its range would end at the clone's depth and pass whatever
 lies beyond. Dependabot's commits pass when `dependabot.yml` sets
 `commit-message: {prefix: chore, include: scope}` for every ecosystem, which gives
 `chore(deps): …` and `chore(deps-dev): …` whatever the repository's history looks like.
+
+A push that queues behind a running build on `dev` can be replaced by a later push before it
+starts. The replaced push's own commits are then never checked.
 
 | Input | Default | |
 | --- | --- | --- |
