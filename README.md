@@ -282,4 +282,6 @@ Otherwise, comment `@dependabot rebase` on the pull request, or merge it by hand
 
 `test.yml` runs on every push: the scripts' tests (`snapshot-version/test/run.sh`,
 `commit-subject-check/test/run.sh`, bash and git only), both composite actions run the way a
-caller runs them, and `commit-subject-check` on this repository's own pushes.
+caller runs them, `commit-subject-check` on this repository's own pushes, actionlint over every
+workflow, and shellcheck over the composite actions' scripts, both downloaded and checked
+against their published checksums.

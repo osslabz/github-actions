@@ -4,9 +4,11 @@
 # fixed while the project's own version moves.
 set -euo pipefail
 
-readonly HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly HERE
 readonly SCRIPT="$HERE/../branch-version.sh"
-readonly WORK="$(mktemp -d)"
+WORK="$(mktemp -d)"
+readonly WORK
 readonly POM="$WORK/pom.xml"
 trap 'rm -rf "$WORK"' EXIT
 
