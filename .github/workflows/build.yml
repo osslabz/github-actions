@@ -1,0 +1,235 @@
+name: build
+
+# Builds a Maven project on push and publishes its snapshot, and an application's image, where
+# the caller's policy says so. README.md gives the caller and the reason for each step.
+
+on:
+  workflow_call:
+    inputs:
+      publish-target:
+        description: Where snapshots are deployed, `central` (Central's snapshot repository) or `github-packages`.
+        required: true
+        type: string
+      publish-branches:
+        description: Which branches publish, `dev` or `all`. The others verify; Dependabot's runs never publish.
+        required: true
+        type: string
+      maven-profiles:
+        description: Profiles for the Maven run, comma-separated.
+        required: false
+        type: string
+        default: ''
+      maven-arguments:
+        description: More arguments for the Maven run, separated by spaces, e.g. -DskipTests.
+        required: false
+        type: string
+        default: ''
+      java-version:
+        description: The JDK the build runs on.
+        required: false
+        type: string
+        default: '25'
+      system-packages:
+        description: apt packages the build needs, separated by spaces.
+        required: false
+        type: string
+        default: ''
+      image-build:
+        description: >-
+          `none`, `spring-boot-goal` (the Maven run adds spring-boot:build-image-no-fork) or
+          `pom-bound` (the pom binds the image build to a phase itself).
+        required: false
+        type: string
+        default: none
+      image-names:
+        description: The artifactIds whose images are pushed to ghcr.io/<owner>/<artifactId>:<version>, separated by spaces.
+        required: false
+        type: string
+        default: ''
+    secrets:
+      central-username:
+        description: Central Portal token user name (publish-target central).
+        required: false
+      central-token:
+        description: Central Portal token password (publish-target central).
+        required: false
+      packages-token:
+        description: Token for GitHub Packages that also reads the owner's other packages (publish-target github-packages). Empty uses the job's token.
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # No `permissions`: the job holds what the caller grants, since a called workflow can only
+    # lower them. `contents: read`, plus `packages: write` where the job's token deploys to
+    # GitHub Packages or pushes an image.
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # Fails a mistyped input before anything runs, and decides whether this run publishes.
+      # In bash, because expression comparisons ignore case and a branch `Dev` is not dev.
+      - name: check-inputs
+        id: plan
+        env:
+          PUBLISH_TARGET: ${{ inputs.publish-target }}
+          PUBLISH_BRANCHES: ${{ inputs.publish-branches }}
+          IMAGE_BUILD: ${{ inputs.image-build }}
+          IMAGE_NAMES: ${{ inputs.image-names }}
+          SYSTEM_PACKAGES: ${{ inputs.system-packages }}
+          HAS_CENTRAL_SECRETS: ${{ secrets.central-username != '' && secrets.central-token != '' }}
+          BRANCH: ${{ github.ref_name }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          case "$PUBLISH_TARGET" in
+            central | github-packages) ;;
+            *) fail "publish-target is '${PUBLISH_TARGET}'; it must be central or github-packages" ;;
+          esac
+          case "$PUBLISH_BRANCHES" in
+            dev | all) ;;
+            *) fail "publish-branches is '${PUBLISH_BRANCHES}'; it must be dev or all" ;;
+          esac
+          case "$IMAGE_BUILD" in
+            none | spring-boot-goal | pom-bound) ;;
+            *) fail "image-build is '${IMAGE_BUILD}'; it must be none, spring-boot-goal or pom-bound" ;;
+          esac
+
+          read -r -d '' -a image_names <<< "$IMAGE_NAMES" || true
+          if [ "$IMAGE_BUILD" = none ] && [ "${#image_names[@]}" -gt 0 ]; then
+            fail "image-names needs image-build spring-boot-goal or pom-bound"
+          fi
+          if [ "$IMAGE_BUILD" != none ] && [ "${#image_names[@]}" -eq 0 ]; then
+            fail "image-build ${IMAGE_BUILD} needs image-names"
+          fi
+          for name in "${image_names[@]}"; do
+            [[ "$name" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] \
+              || fail "image name '${name}' is not a repository name ghcr.io takes"
+          done
+
+          # A name only, so no option reaches apt-get.
+          read -r -d '' -a packages <<< "$SYSTEM_PACKAGES" || true
+          for package in "${packages[@]}"; do
+            [[ "$package" =~ ^[a-z0-9][a-z0-9.+-]+$ ]] \
+              || fail "system package '${package}' is not a Debian package name"
+          done
+
+          # Dependabot's runs hold only Dependabot secrets and a read-only token.
+          publish=false
+          if [ "$ACTOR" != 'dependabot[bot]' ] && { [ "$PUBLISH_BRANCHES" = all ] || [ "$BRANCH" = dev ]; }; then
+            publish=true
+          fi
+          if [ "$publish" = true ] && [ "$PUBLISH_TARGET" = central ] && [ "$HAS_CENTRAL_SECRETS" != true ]; then
+            fail "publishing to Central needs the secrets central-username and central-token"
+          fi
+
+          if [ "$publish" = true ]; then goal=deploy; else goal=verify; fi
+          push_images=false
+          if [ "$publish" = true ] && [ "$IMAGE_BUILD" != none ]; then
+            push_images=true
+          fi
+          {
+            echo "publish=${publish}"
+            echo "goal=${goal}"
+            echo "push-images=${push_images}"
+          } >> "$GITHUB_OUTPUT"
+          echo "publish: ${publish}, goal: ${goal}, push images: ${push_images}"
+
+      # Full history for commit-subject-check and for plugins that read git. No persisted
+      # token: nothing in the build pushes.
+      - name: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # This repository's actions at a commit, not @v1: `uses:` takes no expression, so the
+      # workflow cannot name the commit it runs from. test/build-workflow.sh fails once an
+      # action changes after the commit named here.
+      - name: check-commit-subjects
+        uses: osslabz/github-actions/commit-subject-check@cd44fe64640f7f457c7f1074a35d2d1037c1fb01
+        with:
+          default-branch: dev
+
+      - name: install-system-packages
+        id: system-packages
+        if: inputs.system-packages != ''
+        env:
+          SYSTEM_PACKAGES: ${{ inputs.system-packages }}
+        run: |
+          read -r -d '' -a packages <<< "$SYSTEM_PACKAGES" || true
+          sudo apt-get update
+          sudo apt-get install -y "${packages[@]}"
+
+      - name: setup-jdk
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: 'temurin'
+          cache: maven
+          # A Dependabot branch's poms miss the cache, and the entry it would save is readable
+          # from that branch only.
+          cache-read-only: ${{ startsWith(github.ref_name, 'dependabot/') }}
+          server-id: ${{ inputs.publish-target == 'central' && 'central' || 'github' }}
+          server-username-env-var: ${{ inputs.publish-target == 'central' && 'MAVEN_USERNAME' || 'GITHUB_ACTOR' }}
+          server-password-env-var: ${{ inputs.publish-target == 'central' && 'MAVEN_PASSWORD' || 'PACKAGES_TOKEN' }}
+
+      # After setup-jdk, which keys its Maven cache on the poms' contents: rewriting them
+      # first would miss that cache on every branch but dev.
+      - name: set-snapshot-version
+        id: snapshot
+        uses: osslabz/github-actions/snapshot-version@cd44fe64640f7f457c7f1074a35d2d1037c1fb01
+        with:
+          default-branch: dev
+
+      # One Maven run builds, publishes and, with spring-boot-goal, builds the image. Nothing
+      # reads the local repository afterwards, so install is skipped and the project's own
+      # artifacts stay out of the Maven cache. Central credentials only where the run
+      # publishes; GitHub Packages resolves with the token too, so every run gets it.
+      - name: maven-build
+        id: maven-build
+        env:
+          GOAL: ${{ steps.plan.outputs.goal }}
+          MAVEN_PROFILES: ${{ inputs.maven-profiles }}
+          MAVEN_ARGUMENTS: ${{ inputs.maven-arguments }}
+          IMAGE_BUILD: ${{ inputs.image-build }}
+          MAVEN_USERNAME: ${{ steps.plan.outputs.publish == 'true' && secrets.central-username || '' }}
+          MAVEN_PASSWORD: ${{ steps.plan.outputs.publish == 'true' && secrets.central-token || '' }}
+          PACKAGES_TOKEN: ${{ inputs.publish-target == 'github-packages' && (secrets.packages-token || github.token) || '' }}
+        run: |
+          if [ -x ./mvnw ]; then maven=./mvnw; else maven=mvn; fi
+          args=(--batch-mode --update-snapshots -Dmaven.install.skip=true "$GOAL")
+          if [ -n "$MAVEN_PROFILES" ]; then
+            args+=(-P "$MAVEN_PROFILES")
+          fi
+          if [ "$IMAGE_BUILD" = spring-boot-goal ]; then
+            args+=(spring-boot:build-image-no-fork)
+          fi
+          read -r -d '' -a extra_arguments <<< "$MAVEN_ARGUMENTS" || true
+          "$maven" "${args[@]}" "${extra_arguments[@]}"
+
+      # Spring Boot names each image <artifactId>:<version>, one per module that builds one;
+      # the version is the one snapshot-version gave the poms.
+      - name: push-images
+        id: push-images
+        if: steps.plan.outputs.push-images == 'true'
+        env:
+          IMAGE_NAMES: ${{ inputs.image-names }}
+          VERSION: ${{ steps.snapshot.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$OWNER" --password-stdin
+          read -r -d '' -a image_names <<< "$IMAGE_NAMES" || true
+          for name in "${image_names[@]}"; do
+            image="ghcr.io/${OWNER,,}/${name}:${VERSION}"
+            docker tag "${name}:${VERSION}" "$image"
+            docker push "$image"
+          done

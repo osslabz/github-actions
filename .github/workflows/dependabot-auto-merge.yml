@@ -59,8 +59,9 @@ jobs:
     steps:
       # An allow-list: an update fetch-metadata could not read has no ecosystem and is never
       # merged. Maven majors wait for a human. Action majors merge too, because an action runs
-      # in the build this step waits for -- except a major of this repository's own reusable
-      # workflows, which build-on-push never runs, so a breaking one would still go green.
+      # in the build this step waits for -- except a major of this repository's own workflows:
+      # build-on-push runs build.yml, never release.yml or this one, so a breaking one would
+      # still go green.
       # Waits for the push build of this head commit rather than `gh pr checks --watch`, which
       # counts this job as a pending check and would wait for itself. A red or cancelled build
       # exits non-zero and the pull request stays open; the approval follows the green build.

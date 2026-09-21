@@ -34,6 +34,9 @@ jobs:
       - name: commit-subject-check-tests
         run: commit-subject-check/test/run.sh
 
+      - name: build-workflow-tests
+        run: test/build-workflow.sh
+
       # The script tests cover the derivation; the steps below run the action itself, as a
       # caller does. Maven cannot read the default branch's fixture, so rewriting it fails.
       - name: write-snapshot-version-fixtures
@@ -124,8 +127,8 @@ jobs:
         run: '"$RUNNER_TEMP/actionlint" -color'
 
       # actionlint's own shellcheck pass covers a workflow's inline `run:` blocks, not the
-      # composite actions' standalone scripts. Same pattern as install-actionlint: a
-      # checksum-verified download rather than a third-party action.
+      # standalone scripts. Same pattern as install-actionlint: a checksum-verified download
+      # rather than a third-party action.
       - name: install-shellcheck
         env:
           VERSION: 0.11.0
@@ -144,4 +147,5 @@ jobs:
             commit-subject-check/check-commit-subjects.sh \
             commit-subject-check/test/run.sh \
             snapshot-version/branch-version.sh \
-            snapshot-version/test/run.sh
+            snapshot-version/test/run.sh \
+            test/build-workflow.sh

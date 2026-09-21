@@ -7,12 +7,13 @@ Shared CI for Maven projects across the owner's organisations: composite actions
 workflows. Public because a private repository's actions and workflows cannot be used from
 another organisation, nor from a public repository at all.
 
-| | Kind | Called from the project's |
+| | Kind | Used by |
 | --- | --- | --- |
-| [snapshot-version](#snapshot-version) | composite action | `build-on-push.yml` |
-| [commit-subject-check](#commit-subject-check) | composite action | `build-on-push.yml` |
-| [release.yml](#release) | reusable workflow | `release.yml` |
-| [dependabot-auto-merge.yml](#dependabot-auto-merge) | reusable workflow | `dependabot-auto-merge.yml` |
+| [build.yml](#build) | reusable workflow | the project's `build-on-push.yml` |
+| [snapshot-version](#snapshot-version) | composite action | `build.yml`, or a project's own build |
+| [commit-subject-check](#commit-subject-check) | composite action | `build.yml`, or a project's own build |
+| [release.yml](#release) | reusable workflow | the project's `release.yml` |
+| [dependabot-auto-merge.yml](#dependabot-auto-merge) | reusable workflow | the project's `dependabot-auto-merge.yml` |
 
 Callers use `@v1`, a tag that moves with the latest `v1.x` (see [Releasing](#releasing)).
 
@@ -21,12 +22,12 @@ Callers use `@v1`, a tag that moves with the latest `v1.x` (see [Releasing](#rel
 A project integrates on `dev`, its default branch, and releases from there; `main` only ever
 fast-forwards to the latest release tag. It keeps four files:
 
-- `.github/workflows/build-on-push.yml`, its own, because builds differ too much to share
-  (images, skipped tests, extra tools). It runs on `push` to every branch but `main` and on
+- `.github/workflows/build-on-push.yml`, `.github/workflows/release.yml` and
+  `.github/workflows/dependabot-auto-merge.yml`, a few lines each, calling the reusable
+  workflows. build-on-push runs on `push` to every branch but `main` and on
   `workflow_dispatch`: the shared workflows find it by this file name, wait for it and
-  dispatch it.
-- `.github/workflows/release.yml` and `.github/workflows/dependabot-auto-merge.yml`, a few
-  lines each, calling the reusable workflows.
+  dispatch it. A project whose build `build.yml` does not cover keeps a build-on-push of its
+  own under that name and uses the two composite actions directly.
 - `.github/dependabot.yml`.
 
 The pom carries maven-release-plugin with
@@ -44,8 +45,9 @@ every other commit:
 
 Third-party and GitHub-owned actions are pinned by commit SHA with the version as a comment,
 here and in the projects, because a tag can be moved to other code. Dependabot keeps the pins
-current in one grouped pull request a week. This repository's own actions and workflows stay
-on `@v1`: same owner, and a SHA would turn every change here into a pull request everywhere.
+current in one grouped pull request a week. Projects use this repository's own actions and
+workflows at `@v1`: same owner, and a SHA would turn every change here into a pull request
+everywhere. `build.yml` names its two actions by commit instead (see [Releasing](#releasing)).
 
 ## snapshot-version
 
@@ -140,6 +142,122 @@ starts. The replaced push's own commits are then never checked.
 | `default-branch` | `dev` | The branch a new or force-pushed branch is compared against. |
 | `before` | `github.event.before` | The branch's commit before the push. |
 | `after` | `github.event.after` | The branch's commit after the push. |
+
+## build
+
+Builds a project on every push but to `main`: checks the pushed commit subjects, gives the
+branch its snapshot version, runs Maven, and publishes the snapshot, and an application's
+image, where the caller's policy says so. The caller, for a library on Central that publishes
+from `dev` only:
+
+```yaml
+name: build-on-push
+
+on:
+  push:
+    branches-ignore:
+      - main
+  # Pushes made with GITHUB_TOKEN start no run, so the release and the Dependabot merge
+  # dispatch this workflow on dev to build and publish what they pushed.
+  workflow_dispatch:
+
+concurrency:
+  group: build-on-push-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_name != 'dev' }}
+
+jobs:
+  build-on-push:
+    permissions:
+      contents: read
+    uses: osslabz/github-actions/.github/workflows/build.yml@v1
+    with:
+      publish-target: central
+      publish-branches: dev
+      maven-profiles: osslabz-publish
+    secrets:
+      central-username: ${{ secrets.OSSRH_USERNAME }}
+      central-token: ${{ secrets.OSSRH_TOKEN }}
+```
+
+A library on GitHub Packages that publishes every branch, needs native libraries from the
+runner and skips its tests:
+
+```yaml
+  build-on-push:
+    permissions:
+      contents: read
+    uses: osslabz/github-actions/.github/workflows/build.yml@v1
+    with:
+      publish-target: github-packages
+      publish-branches: all
+      maven-arguments: -DskipTests
+      system-packages: tesseract-ocr libtesseract-dev
+    secrets:
+      packages-token: ${{ secrets.PACKAGES_TOKEN }}
+```
+
+A Spring Boot application whose image the same Maven run builds:
+
+```yaml
+  build-on-push:
+    permissions:
+      contents: read
+      packages: write
+    uses: osslabz/github-actions/.github/workflows/build.yml@v1
+    with:
+      publish-target: github-packages
+      publish-branches: all
+      maven-profiles: coverage
+      image-build: spring-boot-goal
+      image-names: my-app
+    secrets:
+      packages-token: ${{ secrets.PACKAGES_TOKEN }}
+```
+
+Triggers and concurrency stay in the caller. A newer push cancels a running branch build; a
+run on `dev` is never cancelled, so two deploys of one snapshot coordinate never overlap.
+
+| Input | Default | |
+| --- | --- | --- |
+| `publish-target` | required | `central`: server `central`, Central's snapshot repository through the publishing profile. `github-packages`: server `github`, the repository's own package. |
+| `publish-branches` | required | `dev`: only `dev` publishes, other branches verify, for Central's publishing limits. `all`: every branch publishes under its own snapshot version. Dependabot's runs never publish. |
+| `maven-profiles` | empty | Active in the Maven run, e.g. the profile that carries the publishing plugin. |
+| `maven-arguments` | empty | More arguments, split on spaces and passed as written, e.g. `-DskipTests` for tests that need live services. |
+| `java-version` | `25` | The JDK the build runs on. |
+| `system-packages` | empty | apt packages installed before the build, e.g. a native library a test loads. |
+| `image-build` | `none` | `spring-boot-goal`: the Maven run adds `spring-boot:build-image-no-fork` after its lifecycle phase. `pom-bound`: the pom binds the image build to a phase itself, in each module that builds one. |
+| `image-names` | empty | The artifactIds whose images are pushed as `ghcr.io/<owner>/<artifactId>:<version>`. Required with an `image-build`. |
+
+`maven-arguments`, `system-packages` and `image-names` split on whitespace, spaces or newlines
+alike, so a YAML block scalar works the same as a single line.
+
+| Secret | For | |
+| --- | --- | --- |
+| `central-username`, `central-token` | `central` | Central Portal user token. Maven gets it only in runs that publish. |
+| `packages-token` | `github-packages` | A classic token with `read:packages`, plus `write:packages` where it publishes. Empty: the job's own token. |
+
+GitHub Packages resolves and deploys through one server, `github`. The job's own token deploys
+to the repository's package but cannot read the owner's other private packages; a build that
+depends on them passes `packages-token`. Dependabot's runs see Dependabot secrets only: a
+Dependabot secret of the same name with `read:packages` alone covers them, since they never
+publish.
+
+The job declares no `permissions`. A called workflow can lower the caller's but never raise
+them, so it holds what the caller grants: `contents: read`, plus `packages: write` where the
+job's own token deploys or an image is pushed.
+
+The steps, and why each is there:
+
+| Step | Why |
+| --- | --- |
+| `check-inputs` | Fails a mistyped input before anything runs, and decides whether the run publishes: on `dev`, or on every branch with `all`, never for Dependabot, whose runs hold a read-only token. Compared in bash, because expression comparisons ignore case and a branch `Dev` is not `dev`. Publishing to Central without its secrets fails here rather than at the upload. |
+| `checkout` | Full history for `check-commit-subjects` and for plugins that read git. No persisted token: nothing in the build pushes. |
+| `check-commit-subjects` | [commit-subject-check](#commit-subject-check) on the pushed range. |
+| `install-system-packages` | Only with `system-packages`. The names are checked first, so no option reaches `apt-get`. |
+| `setup-jdk` | JDK, Maven cache and the target's server. Dependabot branches read the cache but never save to it: their poms miss it, and the entry would be readable from that branch only. |
+| `set-snapshot-version` | [snapshot-version](#snapshot-version), after `setup-jdk`, whose cache key hashes the poms. |
+| `maven-build` | `deploy` in a run that publishes, `verify` otherwise, with the project's `./mvnw` where there is one. `install` is skipped: nothing reads the local repository afterwards, and the project's own artifacts would otherwise fill the Maven cache. Images are built in every run, so an update that breaks the image never goes green. |
+| `push-images` | Only in runs that publish. Spring Boot names each image `<artifactId>:<version>`; this tags it for `ghcr.io` and pushes it with the job's token. |
 
 ## release
 
@@ -266,10 +384,10 @@ A run Dependabot triggers gets a read-only token unless `permissions` raises it,
 does, and no Actions secrets, which this workflow does not use.
 
 What merges: Maven patch and minor updates, and every GitHub Actions update, except a major of
-this repository's own reusable workflows, which waits for a human like a Maven major does:
-`build-on-push` never runs `release.yml` or `dependabot-auto-merge.yml`, so a breaking major
-would still go green. The list is positive: an update whose metadata could not be read has no
-ecosystem and never merges.
+this repository's own workflows, which waits for a human like a Maven major does:
+`build-on-push` runs `build.yml` but never `release.yml` or `dependabot-auto-merge.yml`, so a
+breaking major would still go green. The list is positive: an update whose metadata could not
+be read has no ecosystem and never merges.
 
 | Job / step | Why |
 | --- | --- |
@@ -307,10 +425,18 @@ git push --force origin v1
 Moving `v1` changes every caller's next run at once. A change a caller has to adapt to goes to
 `v2`. Dependabot's updates of the pins here reach callers the same way, with the next tag.
 
+`build.yml` runs `commit-subject-check` and `snapshot-version` at the commit its `uses:` lines
+name, not at `@v1`: `uses:` takes no expression, so a reusable workflow cannot name the commit
+it runs from. A change to either action lands first; a second commit points `build.yml` at it.
+`test/build-workflow.sh` fails while it lags behind, so the two commits push together:
+`test.yml` runs on the pushed head, and a push that stops at the action's commit alone leaves
+that head red until the pin-bumping commit joins it.
+
 ## Tests
 
 `test.yml` runs on every push: the scripts' tests (`snapshot-version/test/run.sh`,
-`commit-subject-check/test/run.sh`, bash and git only), both composite actions run the way a
-caller runs them, `commit-subject-check` on this repository's own pushes, actionlint over every
-workflow, and shellcheck over the composite actions' scripts, both downloaded and checked
-against their published checksums.
+`commit-subject-check/test/run.sh`, bash and git only); `test/build-workflow.sh`, which runs
+`build.yml`'s shell steps against stubs for `mvn`, `docker` and `sudo` and checks its pinned
+actions; both composite actions run the way a caller runs them; `commit-subject-check` on this
+repository's own pushes; actionlint over every workflow; and shellcheck over the scripts. Both
+linters are downloaded and checked against their published checksums.
