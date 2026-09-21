@@ -37,13 +37,27 @@ runs:
         echo "version=$version" >> "$GITHUB_OUTPUT"
         echo "publishing $version"
 
+        # In bash, case-sensitively, like branch-version.sh's own comparison. GitHub Actions'
+        # `!=` is case-insensitive, so a branch like `Dev` would read as equal to `dev` there
+        # while branch-version.sh (correctly) treats it as a different branch and folds its
+        # name into the version -- rewriting nothing while claiming a branch-suffixed version.
+        if [ "$BRANCH" = "$DEFAULT_BRANCH" ]; then
+          echo "rewrite=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "rewrite=true" >> "$GITHUB_OUTPUT"
+        fi
+
     # The plugin is named in full rather than by its `versions:` prefix, so that no consuming
     # repo has to pin it and an unpinned prefix cannot resolve whatever is latest that day.
     #
     # updateBuildOutputTimestampPolicy: the plugin otherwise rewrites
     # project.build.outputTimestamp to this run's clock, which is where the fixed instant a
     # reproducible build needs lives. Reproducibility breaks silently without this.
+    #
+    # Skipped on the default branch, whose derived version is the one the pom already carries:
+    # the rewrite would change nothing and still cost a Maven start.
     - name: apply
+      if: steps.derive.outputs.rewrite == 'true'
       shell: bash
       env:
         POM: ${{ inputs.pom }}

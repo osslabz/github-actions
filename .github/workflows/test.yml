@@ -24,10 +24,14 @@ jobs:
         run: snapshot-version/test/run.sh
 
       # The script tests cover the derivation; the steps below run the action itself, as a
-      # caller does.
+      # caller does. Maven cannot read the default branch's fixture, so rewriting it fails.
       - name: write-snapshot-version-fixtures
         run: |
-          mkdir -p "$RUNNER_TEMP/feature-branch"
+          mkdir -p "$RUNNER_TEMP/default-branch" "$RUNNER_TEMP/feature-branch" "$RUNNER_TEMP/mixed-case-branch"
+          printf '<project>\n    <version>0.2.1-SNAPSHOT</version>\n</project>\n' \
+            > "$RUNNER_TEMP/default-branch/pom.xml"
+          printf '<project>\n    <version>0.2.1-SNAPSHOT</version>\n</project>\n' \
+            > "$RUNNER_TEMP/mixed-case-branch/pom.xml"
           cat > "$RUNNER_TEMP/feature-branch/pom.xml" <<'POM'
           <project xmlns="http://maven.apache.org/POM/4.0.0">
               <modelVersion>4.0.0</modelVersion>
@@ -38,6 +42,13 @@ jobs:
           </project>
           POM
 
+      - name: snapshot-version-on-default-branch
+        id: on-default-branch
+        uses: ./snapshot-version
+        with:
+          pom: ${{ runner.temp }}/default-branch/pom.xml
+          branch: dev
+
       - name: snapshot-version-on-feature-branch
         id: on-feature-branch
         uses: ./snapshot-version
@@ -45,9 +56,24 @@ jobs:
           pom: ${{ runner.temp }}/feature-branch/pom.xml
           branch: feat/fixture
 
+      # GitHub Actions' `!=` is case-insensitive, so `Dev` must still be treated as a branch of
+      # its own, folded into the version and rewritten in the pom, exactly like any other
+      # branch that isn't the (case-sensitive) default.
+      - name: snapshot-version-on-mixed-case-branch
+        id: on-mixed-case-branch
+        uses: ./snapshot-version
+        with:
+          pom: ${{ runner.temp }}/mixed-case-branch/pom.xml
+          branch: Dev
+
       - name: check-snapshot-version-results
         env:
+          DEFAULT_BRANCH_VERSION: ${{ steps.on-default-branch.outputs.version }}
           FEATURE_BRANCH_VERSION: ${{ steps.on-feature-branch.outputs.version }}
+          MIXED_CASE_BRANCH_VERSION: ${{ steps.on-mixed-case-branch.outputs.version }}
         run: |
+          test "$DEFAULT_BRANCH_VERSION" = 0.2.1-SNAPSHOT
           test "$FEATURE_BRANCH_VERSION" = 0.2.1-feat-fixture-SNAPSHOT
           grep -q '<version>0.2.1-feat-fixture-SNAPSHOT</version>' "$RUNNER_TEMP/feature-branch/pom.xml"
+          test "$MIXED_CASE_BRANCH_VERSION" = 0.2.1-Dev-SNAPSHOT
+          grep -q '<version>0.2.1-Dev-SNAPSHOT</version>' "$RUNNER_TEMP/mixed-case-branch/pom.xml"

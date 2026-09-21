@@ -30,6 +30,8 @@ feat/async-instrumentation   0.3.1-feat-async-instrumentation-SNAPSHOT
 Run it after the step that sets the JDK up and before `deploy`. `actions/setup-java` keys its
 Maven cache on the poms' contents, so rewriting them earlier misses that cache on every branch
 but the default one. The action leaves the poms rewritten in the workspace; nothing commits them.
+On the default branch it rewrites nothing, since the version stays what the pom says, and
+Maven does not start.
 
 The version is also an output:
 
