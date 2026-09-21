@@ -205,7 +205,7 @@ because a called workflow can only lower them.
 | --- | --- | --- |
 | `central-username`, `central-token` | `central` | Central Portal user token. |
 | `gpg-private-key`, `gpg-passphrase` | `central` | ASCII-armored signing key and its passphrase. |
-| `packages-token` | `github-packages` | A classic token with `write:packages`; it also reads the owner's other packages, which the job's own token cannot. |
+| `packages-token` | `github-packages` | A classic token with `write:packages`, which also reads the owner's other packages. No `repo` scope: git and a pom's scm URL use the job's own token. |
 
 The steps of the `release` job, and why each is there:
 
@@ -215,7 +215,7 @@ The steps of the `release` job, and why each is there:
 | `guard-release-ref` | `workflow_dispatch` has no branch filter. A failing step, not a job `if`, which would report a mis-dispatch as a green skip. |
 | `checkout` | Full history and tags for the version policy and the preflight. No `ref`: maven-scm pushes to the branch checked out, which is `dev`. |
 | `preflight` | Refuses, before anything is tagged or published: `dev` at a different commit than this run checked out, which is what a second dispatch queued behind a completed one sees, since its checkout is pinned to its own dispatch time; a wrong `publish-target` or a missing secret; a malformed or taken `release-version`; nothing committed since the last tag but its next development version (a second dispatch would publish an identical patch release, which Central never deletes); a `main` that `dev` does not contain, or merge commits between them, which main's linear-history rule refuses. |
-| `setup-jdk` | JDK, Maven cache, the server credentials and the signing key in an isolated keyring. |
+| `setup-jdk` | JDK, Maven cache, the server credentials and the signing key in an isolated keyring. For GitHub Packages the server's password is the packages token, under a variable of its own: `GITHUB_TOKEN` stays the job's token, which a pom's scm URL hands to `release:perform`'s clone of a private repository. |
 | `configure-git-user` | The identity checkout documents for commits made with the built-in token. `git config` rather than an action: nothing third-party runs in the job that holds the keys and the token. |
 | `release-prepare-perform` | The profiles go on the command line, so `release:prepare`'s own `clean verify` builds javadoc and signs before anything is pushed. There is no separate build step: that `clean verify` is it. |
 | `released-tag` | `release:prepare` leaves `HEAD` one commit after the tag; `git describe` names the tag this run made, not the newest one. |

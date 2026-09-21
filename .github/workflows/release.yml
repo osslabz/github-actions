@@ -42,7 +42,7 @@ on:
         description: Passphrase of gpg-private-key (publish-target central).
         required: false
       packages-token:
-        description: Token that deploys to GitHub Packages and reads the owner's other packages (publish-target github-packages).
+        description: Token that deploys to GitHub Packages and reads the owner's other packages (publish-target github-packages). Needs no repository scope.
         required: false
 
 jobs:
@@ -151,10 +151,11 @@ jobs:
           java-version: ${{ inputs.java-version }}
           distribution: 'temurin'
           cache: maven
-          # GitHub Packages keeps setup-java's defaults: server `github`, GITHUB_ACTOR, GITHUB_TOKEN.
+          # GitHub Packages: server `github` as setup-java's default, but its password from
+          # PACKAGES_TOKEN, so GITHUB_TOKEN stays the job's token for git (below).
           server-id: ${{ inputs.publish-target == 'central' && 'central' || 'github' }}
           server-username-env-var: ${{ inputs.publish-target == 'central' && 'MAVEN_USERNAME' || 'GITHUB_ACTOR' }}
-          server-password-env-var: ${{ inputs.publish-target == 'central' && 'MAVEN_PASSWORD' || 'GITHUB_TOKEN' }}
+          server-password-env-var: ${{ inputs.publish-target == 'central' && 'MAVEN_PASSWORD' || 'PACKAGES_TOKEN' }}
           # Empty for github-packages, which then imports no key.
           gpg-private-key: ${{ secrets.gpg-private-key }}
           # The name maven-gpg-plugin reads by default, so setup-java adds nothing to settings.xml.
@@ -170,8 +171,8 @@ jobs:
       # release:prepare passes them to its own `clean verify`, so javadoc and signing fail
       # before anything is committed, tagged or pushed. That build is the release's only
       # verification before the push; release:perform builds the tag once more to deploy it.
-      # GITHUB_TOKEN carries the packages token: setup-java's `github` server reads it, and so
-      # does a pom whose scm URL needs credentials for release:perform's clone.
+      # GITHUB_TOKEN is the job's token, for a pom whose scm URL carries credentials:
+      # release:perform clones the tag with them, outside the checkout that holds the token.
       - name: release-prepare-perform
         env:
           MAVEN_PROFILES: ${{ inputs.maven-profiles }}
@@ -180,7 +181,8 @@ jobs:
           MAVEN_USERNAME: ${{ secrets.central-username }}
           MAVEN_PASSWORD: ${{ secrets.central-token }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.gpg-passphrase }}
-          GITHUB_TOKEN: ${{ secrets.packages-token }}
+          PACKAGES_TOKEN: ${{ secrets.packages-token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           args=(--batch-mode -P "$MAVEN_PROFILES")
           if [ -n "$RELEASE_VERSION" ]; then
