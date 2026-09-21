@@ -14,7 +14,7 @@ another organisation, nor from a public repository at all.
 | [release.yml](#release) | reusable workflow | `release.yml` |
 | [dependabot-auto-merge.yml](#dependabot-auto-merge) | reusable workflow | `dependabot-auto-merge.yml` |
 
-Callers use `@v1`, a tag that moves with the latest `v1.x`.
+Callers use `@v1`, a tag that moves with the latest `v1.x` (see [Releasing](#releasing)).
 
 ## The project side
 
@@ -282,6 +282,24 @@ publishes the snapshot.
 Re-running a red build does not re-run this workflow. Re-running this workflow's own failed run
 after the build is green does merge it, since it looks the build up again by head commit.
 Otherwise, comment `@dependabot rebase` on the pull request, or merge it by hand.
+
+## Releasing
+
+Changes land on `main` by fast-forward, and `test.yml` must be green there first. A project
+can try a change before any tag moves by using the commit's full SHA in place of `@v1`, for
+the actions and the workflows alike.
+
+Then tag the commit and move `v1` to it. Both tags are annotated, like the existing ones:
+
+```
+git tag -a v1.1.0 -m "v1.1.0" <sha>
+git tag -f -a v1 -m "v1 at v1.1.0" <sha>
+git push origin v1.1.0
+git push --force origin v1
+```
+
+Moving `v1` changes every caller's next run at once. A change a caller has to adapt to goes to
+`v2`. Dependabot's updates of the pins here reach callers the same way, with the next tag.
 
 ## Tests
 
