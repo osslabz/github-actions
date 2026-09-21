@@ -42,7 +42,7 @@ The version is also an output:
 | Input | Default | |
 | --- | --- | --- |
 | `default-branch` | `dev` | The branch that keeps the plain version. `main` for `bitcoin-commons` and `lnd-rest-client`. |
-| `pom` | `pom.xml` | The reactor's root pom. |
+| `pom` | `pom.xml` | The reactor's root pom, read for the version and rewritten with the new one. |
 | `branch` | `github.ref_name` | The branch to derive from. |
 
 It publishes nothing and knows no registry: the `deploy` step stays in the calling workflow,
@@ -55,5 +55,5 @@ reproducible.
 
 ## Tests
 
-`snapshot-version/test/run.sh` checks the derivation against a fixture pom. It needs bash and
-nothing else, and runs on every push.
+`test.yml` runs on every push: `snapshot-version/test/run.sh`, which checks the derivation
+against a fixture pom with bash alone, and the action itself, run the way a caller runs it.

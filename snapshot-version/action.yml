@@ -46,10 +46,11 @@ runs:
     - name: apply
       shell: bash
       env:
+        POM: ${{ inputs.pom }}
         VERSION: ${{ steps.derive.outputs.version }}
       run: |
         if [ -x ./mvnw ]; then maven=./mvnw; else maven=mvn; fi
-        "$maven" --batch-mode org.codehaus.mojo:versions-maven-plugin:2.22.0:set \
+        "$maven" --batch-mode --file "$POM" org.codehaus.mojo:versions-maven-plugin:2.22.0:set \
           -DnewVersion="$VERSION" \
           -DprocessAllModules=true \
           -DgenerateBackupPoms=false \

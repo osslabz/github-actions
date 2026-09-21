@@ -11,7 +11,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     permissions:
       contents: read
@@ -22,3 +22,32 @@ jobs:
 
       - name: snapshot-version-tests
         run: snapshot-version/test/run.sh
+
+      # The script tests cover the derivation; the steps below run the action itself, as a
+      # caller does.
+      - name: write-snapshot-version-fixtures
+        run: |
+          mkdir -p "$RUNNER_TEMP/feature-branch"
+          cat > "$RUNNER_TEMP/feature-branch/pom.xml" <<'POM'
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>net.osslabz.test</groupId>
+              <artifactId>fixture</artifactId>
+              <version>0.2.1-SNAPSHOT</version>
+              <packaging>pom</packaging>
+          </project>
+          POM
+
+      - name: snapshot-version-on-feature-branch
+        id: on-feature-branch
+        uses: ./snapshot-version
+        with:
+          pom: ${{ runner.temp }}/feature-branch/pom.xml
+          branch: feat/fixture
+
+      - name: check-snapshot-version-results
+        env:
+          FEATURE_BRANCH_VERSION: ${{ steps.on-feature-branch.outputs.version }}
+        run: |
+          test "$FEATURE_BRANCH_VERSION" = 0.2.1-feat-fixture-SNAPSHOT
+          grep -q '<version>0.2.1-feat-fixture-SNAPSHOT</version>' "$RUNNER_TEMP/feature-branch/pom.xml"
