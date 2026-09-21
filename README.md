@@ -12,18 +12,22 @@ another organisation, nor from a public repository at all.
 | [snapshot-version](#snapshot-version) | composite action | `build-on-push.yml` |
 | [commit-subject-check](#commit-subject-check) | composite action | `build-on-push.yml` |
 | [release.yml](#release) | reusable workflow | `release.yml` |
+| [dependabot-auto-merge.yml](#dependabot-auto-merge) | reusable workflow | `dependabot-auto-merge.yml` |
 
 Callers use `@v1`, a tag that moves with the latest `v1.x`.
 
 ## The project side
 
 A project integrates on `dev`, its default branch, and releases from there; `main` only ever
-fast-forwards to the latest release tag. It keeps two workflows for that:
+fast-forwards to the latest release tag. It keeps four files:
 
 - `.github/workflows/build-on-push.yml`, its own, because builds differ too much to share
   (images, skipped tests, extra tools). It runs on `push` to every branch but `main` and on
-  `workflow_dispatch`: the release workflow finds it by this file name and dispatches it.
-- `.github/workflows/release.yml`, a few lines calling the reusable workflow.
+  `workflow_dispatch`: the shared workflows find it by this file name, wait for it and
+  dispatch it.
+- `.github/workflows/release.yml` and `.github/workflows/dependabot-auto-merge.yml`, a few
+  lines each, calling the reusable workflows.
+- `.github/dependabot.yml`.
 
 The pom carries maven-release-plugin with
 [conventional-commits-version-policy](https://github.com/nielsbasjes/conventional-commits-maven-release),
@@ -224,6 +228,55 @@ the dispatched commit, so after the first push it can only fail at the push agai
 | `fast-forward-main` | published | repair `main`, then push the tag's commit to it. This run never reached `create-github-release` or `build-next-snapshot` either: create the GitHub release and dispatch `build-on-push` on `dev` by hand |
 | `create-github-release` | published, `main` moved | run the step's command by hand |
 | `build-next-snapshot` | released | dispatch `build-on-push` on `dev` by hand |
+
+## dependabot-auto-merge
+
+Merges a Dependabot pull request into `dev` once its `build-on-push` run is green. The caller:
+
+```yaml
+name: dependabot-auto-merge
+
+on:
+  pull_request:
+    branches:
+      - dev
+
+jobs:
+  dependabot-auto-merge:
+    # Covers every job of the shared workflow; each job takes only what it needs.
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    uses: osslabz/github-actions/.github/workflows/dependabot-auto-merge.yml@v1
+```
+
+A run Dependabot triggers gets a read-only token unless `permissions` raises it, as the caller
+does, and no Actions secrets, which this workflow does not use.
+
+What merges: Maven patch and minor updates, and every GitHub Actions update, except a major of
+this repository's own reusable workflows, which waits for a human like a Maven major does:
+`build-on-push` never runs `release.yml` or `dependabot-auto-merge.yml`, so a breaking major
+would still go green. The list is positive: an update whose metadata could not be read has no
+ecosystem and never merges.
+
+| Job / step | Why |
+| --- | --- |
+| `metadata` | Runs `fetch-metadata` in its own, read-only job, so the ecosystem and update type are known before the job that holds `contents: write` and `pull-requests: write` starts. |
+| job `if` | Only pull requests opened and pushed by Dependabot. A human's push to one leaves the merge to a human. Repeated on `merge` rather than relied on through `needs`, so a mis-triggered run reads as a skip, not a failure. |
+| `merge` concurrency | Scoped to the pull request: a Dependabot push that supersedes an in-progress merge attempt cancels it instead of racing it. Job-level and left off `build-merged-dev`, so cancelling an attempt here never cancels the dispatch that follows one that already succeeded. |
+| wait for the build | Polls up to five minutes for the head commit's `build-on-push` run, which may not exist yet, then watches it. Not `gh pr checks --watch`, which counts this job as pending and would wait for itself. A red or cancelled build fails the job and the pull request stays open. |
+| approve | After the green build, so a red pull request never shows as approved. The repository must allow Actions to approve pull requests. |
+| merge | `--rebase` keeps history linear and Dependabot's conventional subject, which squash would replace with the title. `--match-head-commit` refuses a head the build did not cover. |
+
+A third job, `build-merged-dev`, dispatches `build-on-push.yml` on `dev` after a merge. The
+merge rebased the pull request onto whatever `dev` had become, a combination nobody built, and
+pushed it with `GITHUB_TOKEN`, which starts no workflow. The dispatched build tests it and
+publishes the snapshot.
+
+Re-running a red build does not re-run this workflow. Re-running this workflow's own failed run
+after the build is green does merge it, since it looks the build up again by head commit.
+Otherwise, comment `@dependabot rebase` on the pull request, or merge it by hand.
 
 ## Tests
 

@@ -1,0 +1,120 @@
+name: dependabot-auto-merge
+
+# Merges a Dependabot pull request once its build is green. README.md gives the caller and the
+# reason for each step.
+
+on:
+  workflow_call:
+
+jobs:
+  # Read-only: fetch-metadata never needs contents or pull-requests write, and isolating it
+  # here keeps those out of reach of anything but the job that decides whether to merge.
+  metadata:
+    # Opened and pushed by Dependabot only: fetch-metadata reports nothing for other pull
+    # requests, and a human's push to a Dependabot branch leaves the merge to a human.
+    if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      pull-requests: read
+
+    outputs:
+      package-ecosystem: ${{ steps.metadata.outputs.package-ecosystem }}
+      update-type: ${{ steps.metadata.outputs.update-type }}
+      dependency-names: ${{ steps.metadata.outputs.dependency-names }}
+
+    steps:
+      - name: fetch-metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+  merge:
+    needs: metadata
+    # Opened and pushed by Dependabot only, same as the metadata job: a human's push to a
+    # Dependabot branch leaves the merge to a human. Repeated rather than left to the cascading
+    # skip of a failed `needs`, so a mis-triggered run reads as an intentional skip, not a
+    # failure.
+    if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    # Waits for the build, which is bounded at 30 minutes.
+    timeout-minutes: 40
+    # Scoped to the pull request: a Dependabot push that supersedes an in-progress merge
+    # attempt for it cancels that attempt rather than racing it. Job-level and left off
+    # build-merged-dev, so cancelling an attempt here never cancels the dispatch that follows
+    # one that already succeeded.
+    concurrency:
+      group: dependabot-merge-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+
+    permissions:
+      contents: write
+      pull-requests: write
+      # `gh run list` and `gh run watch` read the Actions API.
+      actions: read
+
+    outputs:
+      merged: ${{ steps.merge.outputs.merged }}
+
+    steps:
+      # An allow-list: an update fetch-metadata could not read has no ecosystem and is never
+      # merged. Maven majors wait for a human. Action majors merge too, because an action runs
+      # in the build this step waits for -- except a major of this repository's own reusable
+      # workflows, which build-on-push never runs, so a breaking one would still go green.
+      # Waits for the push build of this head commit rather than `gh pr checks --watch`, which
+      # counts this job as a pending check and would wait for itself. A red or cancelled build
+      # exits non-zero and the pull request stays open; the approval follows the green build.
+      # --rebase keeps history linear and Dependabot's conventional subject, which squash would
+      # replace with the pull request title. --match-head-commit refuses a head this build did
+      # not cover.
+      - name: merge-after-green-build
+        id: merge
+        if: >-
+          (needs.metadata.outputs.package-ecosystem == 'github_actions'
+           && (needs.metadata.outputs.update-type != 'version-update:semver-major'
+               || !contains(needs.metadata.outputs.dependency-names, 'osslabz/github-actions')))
+          || (needs.metadata.outputs.package-ecosystem == 'maven'
+              && (needs.metadata.outputs.update-type == 'version-update:semver-patch'
+                  || needs.metadata.outputs.update-type == 'version-update:semver-minor'))
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # The push run may not exist yet when the pull_request event fires.
+          run_id=""
+          for _ in $(seq 30); do
+            run_id="$(gh run list --workflow build-on-push.yml --commit "$HEAD_SHA" \
+              --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            [ -n "$run_id" ] && break
+            sleep 10
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error::no build-on-push run for ${HEAD_SHA} after five minutes"
+            exit 1
+          fi
+
+          gh run watch "$run_id" --exit-status --interval 30
+          gh pr review --approve "$PR_URL"
+          gh pr merge --rebase --match-head-commit "$HEAD_SHA" "$PR_URL"
+          echo "merged=true" >> "$GITHUB_OUTPUT"
+
+  # The merge pushed dev with GITHUB_TOKEN, which starts no push run. The rebased combination
+  # on dev was never built as such, so it is built and published here. A job of its own, so
+  # `actions: write` stays away from the job that runs fetch-metadata.
+  build-merged-dev:
+    needs: merge
+    if: needs.merge.outputs.merged == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      actions: write
+
+    steps:
+      - name: dispatch-build-on-push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run build-on-push.yml --ref dev
