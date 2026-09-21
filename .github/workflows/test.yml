@@ -41,9 +41,16 @@ jobs:
           mkdir -p "$RUNNER_TEMP/default-branch" "$RUNNER_TEMP/feature-branch" "$RUNNER_TEMP/mixed-case-branch"
           printf '<project>\n    <version>0.2.1-SNAPSHOT</version>\n</project>\n' \
             > "$RUNNER_TEMP/default-branch/pom.xml"
-          printf '<project>\n    <version>0.2.1-SNAPSHOT</version>\n</project>\n' \
-            > "$RUNNER_TEMP/mixed-case-branch/pom.xml"
           cat > "$RUNNER_TEMP/feature-branch/pom.xml" <<'POM'
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+              <modelVersion>4.0.0</modelVersion>
+              <groupId>net.osslabz.test</groupId>
+              <artifactId>fixture</artifactId>
+              <version>0.2.1-SNAPSHOT</version>
+              <packaging>pom</packaging>
+          </project>
+          POM
+          cat > "$RUNNER_TEMP/mixed-case-branch/pom.xml" <<'POM'
           <project xmlns="http://maven.apache.org/POM/4.0.0">
               <modelVersion>4.0.0</modelVersion>
               <groupId>net.osslabz.test</groupId>
