@@ -191,7 +191,8 @@ jobs:
           if [ -n "$RELEASE_ARGUMENTS" ]; then
             args+=("-Darguments=${RELEASE_ARGUMENTS}")
           fi
-          mvn "${args[@]}" release:prepare release:perform
+          if [ -x ./mvnw ]; then maven=./mvnw; else maven=mvn; fi
+          "$maven" "${args[@]}" release:prepare release:perform
 
       # release:prepare leaves HEAD on the next development version, one commit after the tag.
       - name: released-tag
