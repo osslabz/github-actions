@@ -40,6 +40,11 @@ every other commit:
 <scmDevelopmentCommitComment>@{prefix} prepare next development iteration</scmDevelopmentCommitComment>
 ```
 
+Third-party and GitHub-owned actions are pinned by commit SHA with the version as a comment,
+here and in the projects, because a tag can be moved to other code. Dependabot keeps the pins
+current in one grouped pull request a week. This repository's own actions and workflows stay
+on `@v1`: same owner, and a SHA would turn every change here into a pull request everywhere.
+
 ## snapshot-version
 
 Gives a branch's build a Maven version of its own, so every branch can publish a snapshot
