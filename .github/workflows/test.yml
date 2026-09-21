@@ -19,9 +19,20 @@ jobs:
     steps:
       - name: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # commit-subject-check reads the pushed range
+          fetch-depth: 0
+
+      - name: check-commit-subjects
+        uses: ./commit-subject-check
+        with:
+          default-branch: main
 
       - name: snapshot-version-tests
         run: snapshot-version/test/run.sh
+
+      - name: commit-subject-check-tests
+        run: commit-subject-check/test/run.sh
 
       # The script tests cover the derivation; the steps below run the action itself, as a
       # caller does. Maven cannot read the default branch's fixture, so rewriting it fails.

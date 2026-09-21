@@ -7,8 +7,12 @@ Shared composite actions for the Java build pipelines across `osslabz` and `peek
 Public because a private repository's actions cannot be used from another organisation, nor
 from a public repository at all.
 
-One action so far, used by every Java repository in both organisations. There are no
-releases. Callers pin `@v1`, a tag that moves with the latest `v1.x`.
+| | Kind | Called from the project's |
+| --- | --- | --- |
+| [snapshot-version](#snapshot-version) | composite action | `build-on-push.yml` |
+| [commit-subject-check](#commit-subject-check) | composite action | `build-on-push.yml` |
+
+Callers use `@v1`, a tag that moves with the latest `v1.x`.
 
 ## snapshot-version
 
@@ -55,7 +59,53 @@ passes `-DupdateBuildOutputTimestampPolicy=never`, without which the plugin repl
 `project.build.outputTimestamp` with the run's own clock and a reproducible build stops being
 reproducible.
 
+## commit-subject-check
+
+Fails the build when a pushed commit subject is not a
+[conventional commit](https://www.conventionalcommits.org/). The release reads its version from
+these subjects, and a subject the version policy cannot parse counts as a patch, whatever it
+changed. Put it first after the checkout, which needs the full history:
+
+```yaml
+- uses: actions/checkout@<sha> # v7.0.1
+  with:
+    fetch-depth: 0
+- uses: osslabz/github-actions/commit-subject-check@v1
+  with:
+    default-branch: dev
+```
+
+A subject passes as `type(scope)!: description`, scope and `!` optional, with the type one of
+`feat fix perf refactor docs test build ci chore style revert`. A scope, when given, is letters,
+digits, `_` and `-` only: what `conventional-commits-version-policy` 1.0.9 parses by default. A
+slash, a dot or a comma-separated list would pass a laxer check but not that policy, which would
+then derive a patch from the subject regardless of what it changed. Merge commits are skipped,
+and so are `[release] …` subjects, which the release plugin wrote before release commits became
+conventional and which still follow the last tag in older repositories.
+
+Only what the push brought is checked, never older history:
+
+| Push | Range checked |
+| --- | --- |
+| to an existing branch | `before..after` of the push |
+| creating a branch | from where it left `origin/<default-branch>` |
+| force-push to a branch | the same, since the old tip is gone |
+| force-push to the default branch | since the last `x.y.z` tag, what the next release weighs |
+| `workflow_dispatch` and other events | nothing |
+
+A shallow checkout fails the step: its range would end at the clone's depth and pass whatever
+lies beyond. Dependabot's commits pass when `dependabot.yml` sets
+`commit-message: {prefix: chore, include: scope}` for every ecosystem, which gives
+`chore(deps): …` and `chore(deps-dev): …` whatever the repository's history looks like.
+
+| Input | Default | |
+| --- | --- | --- |
+| `default-branch` | `dev` | The branch a new or force-pushed branch is compared against. |
+| `before` | `github.event.before` | The branch's commit before the push. |
+| `after` | `github.event.after` | The branch's commit after the push. |
+
 ## Tests
 
-`test.yml` runs on every push: `snapshot-version/test/run.sh`, which checks the derivation
-against a fixture pom with bash alone, and the action itself, run the way a caller runs it.
+`test.yml` runs on every push: the scripts' tests (`snapshot-version/test/run.sh`,
+`commit-subject-check/test/run.sh`, bash and git only), both composite actions run the way a
+caller runs them, and `commit-subject-check` on this repository's own pushes.
