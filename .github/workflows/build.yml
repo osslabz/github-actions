@@ -154,7 +154,7 @@ jobs:
       # workflow cannot name the commit it runs from. test/build-workflow.sh fails once an
       # action changes after the commit named here.
       - name: check-commit-subjects
-        uses: osslabz/github-actions/commit-subject-check@cd44fe64640f7f457c7f1074a35d2d1037c1fb01
+        uses: osslabz/github-actions/commit-subject-check@862f28215c5dbd73ff0a8f1585de6794bea94fbc
         with:
           default-branch: dev
 
