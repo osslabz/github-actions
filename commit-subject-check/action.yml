@@ -1,13 +1,12 @@
 name: commit-subject-check
 description: >
   Fails when a pushed commit subject is not a conventional commit, because the release reads
-  its version from those subjects. Checks only the commits the push brought, never older history.
+  its version from those subjects. Checks only the commits the push brought, never older
+  history, and skips a forced push, whose range is meaningless.
 
 inputs:
   default-branch:
-    description: >
-      The branch a new or force-pushed branch is compared against, and whose force-push is
-      checked since the last version tag.
+    description: The branch a new branch is compared against.
     default: dev
   before:
     description: The commit the branch pointed at before the push. Empty for events without one.
@@ -15,6 +14,9 @@ inputs:
   after:
     description: The commit the push left the branch at. Empty for events without one.
     default: ${{ github.event.after }}
+  forced:
+    description: Whether the push was a force-push. Empty for events without one.
+    default: ${{ github.event.forced }}
 
 runs:
   using: composite
@@ -25,5 +27,6 @@ runs:
         BEFORE: ${{ inputs.before }}
         AFTER: ${{ inputs.after }}
         DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        FORCED: ${{ inputs.forced }}
       run: |
-        "${{ github.action_path }}/check-commit-subjects.sh" . "$BEFORE" "$AFTER" "$DEFAULT_BRANCH"
+        "${{ github.action_path }}/check-commit-subjects.sh" . "$BEFORE" "$AFTER" "$DEFAULT_BRANCH" "$FORCED"

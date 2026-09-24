@@ -6,7 +6,7 @@
 # parse counts as a patch, whatever it changed. Only the pushed range is checked, so history
 # from before the check existed never fails a build.
 #
-# Usage: check-commit-subjects.sh <repo> <before> <after> [default-branch]
+# Usage: check-commit-subjects.sh <repo> <before> <after> [default-branch] [forced]
 set -euo pipefail
 
 readonly ZERO="0000000000000000000000000000000000000000"
@@ -21,6 +21,7 @@ repo="$1"
 before="$2"
 after="$3"
 default_branch="${4:-dev}"
+forced="${5:-false}"
 
 # A dispatched run, or any event other than a push, has no pushed range; a deleted branch
 # has nothing left to check.
@@ -39,31 +40,35 @@ resolves() {
     git -C "$repo" rev-parse --verify --quiet "$1^{commit}" > /dev/null
 }
 
-# A push that creates a branch reports the all-zero SHA as `before`; a force-push reports a
-# tip the clone no longer has. Neither leaves a previous state, so the range starts where the
-# branch left the default branch instead.
+# A push that creates a branch reports the all-zero SHA as `before`, and the range starts where
+# the branch left the default branch instead: that range is meaningful, so it is checked below.
+#
+# A force-push is different: `before` names a tip the rewrite discarded, so `before..after`
+# would either fail to resolve or, if `before` happens to still resolve to some other commit,
+# range over history that was never pushed by this event. Neither is worth widening to the
+# default branch; a forced, deliberate rewrite is not what this gate is for, so it is skipped
+# outright. `github.event.forced` is authoritative on its own: GitHub calls a push forced
+# whenever it wasn't a fast-forward, whatever before and after happen to resolve to.
+if [ "$before" != "$ZERO" ]; then
+    if [ "$forced" = true ]; then
+        echo "the push was forced; the range is meaningless, skipping the commit-subject check"
+        exit 0
+    fi
+    # An unresolvable after is a different problem: read below, where git log fails loudly on
+    # it instead of being read here as a rewrite.
+    if ! resolves "$before" \
+        || { resolves "$after" && ! git -C "$repo" merge-base --is-ancestor "$before" "$after"; }; then
+        echo "before is not an ancestor of after; the range is meaningless, skipping the commit-subject check"
+        exit 0
+    fi
+fi
+
 base="$before"
-rewritten=false
 if [ "$before" = "$ZERO" ]; then
     base="origin/$default_branch"
-elif ! resolves "$before"; then
-    base="origin/$default_branch"
-    rewritten=true
 fi
 
-# A force-push to the default branch itself makes that fallback equal to the pushed head, an
-# empty range that would pass without looking. There the range is what the next release
-# weighs: everything since the last version tag, or all history if there is none.
-if [ "$rewritten" = true ] && resolves "$base" \
-    && [ "$(git -C "$repo" rev-parse "$base")" = "$(git -C "$repo" rev-parse "$after^{commit}")" ]; then
-    base="$(git -C "$repo" describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' "$after" 2> /dev/null || true)"
-fi
-
-if [ -n "$base" ]; then
-    range="$base..$after"
-else
-    range="$after"
-fi
+range="$base..$after"
 
 # Captured on its own so a range git cannot read fails here instead of reaching the filters
 # below, where `|| true` would turn it into a pass.

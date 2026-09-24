@@ -125,9 +125,13 @@ Only what the push brought is checked, never older history:
 | --- | --- |
 | to an existing branch | `before..after` of the push |
 | creating a branch | from where it left `origin/<default-branch>` |
-| force-push to a branch | the same, since the old tip is gone |
-| force-push to the default branch | since the last `x.y.z` tag, what the next release weighs, or all history without one |
+| force-push, or `before` not an ancestor of `after` | nothing: the range is meaningless, so the step logs why and passes |
 | `workflow_dispatch` and other events | nothing |
+
+A rewrite (`git filter-repo`, a force-pushed rebase) leaves `before` unresolvable, or resolvable
+but no longer an ancestor of `after`; either way there is no meaningful range, and widening it
+to the default branch would walk into history the gate was never meant to audit. A force-push
+is already a deliberate, logged admin act, so the step skips instead, logging why.
 
 A shallow checkout fails the step: its range would end at the clone's depth and pass whatever
 lies beyond. Dependabot's commits pass when `dependabot.yml` sets
@@ -139,9 +143,10 @@ starts. The replaced push's own commits are then never checked.
 
 | Input | Default | |
 | --- | --- | --- |
-| `default-branch` | `dev` | The branch a new or force-pushed branch is compared against. |
+| `default-branch` | `dev` | The branch a new branch is compared against. |
 | `before` | `github.event.before` | The branch's commit before the push. |
 | `after` | `github.event.after` | The branch's commit after the push. |
+| `forced` | `github.event.forced` | Whether the push was a force-push. |
 
 ## build
 

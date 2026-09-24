@@ -119,16 +119,21 @@ expect_pass "a new conventional branch" "$CLONE" "$ZERO" "$clean_branch" dev
 expect_failure "a new sloppy branch" "wip" "$CLONE" "$ZERO" "$sloppy_branch" dev
 expect_not_reported "Update README.md"
 
-echo "checking a force-pushed branch is checked from where it left the default branch"
-expect_pass "a force-pushed conventional branch" "$CLONE" "$UNKNOWN_SHA" "$clean_branch" dev
-expect_failure "a force-pushed sloppy branch" "wip" "$CLONE" "$UNKNOWN_SHA" "$sloppy_branch" dev
+# A rewrite (e.g. git filter-repo) leaves before unresolvable, or resolvable but no longer an
+# ancestor of after; either way the range is meaningless and must be skipped, not widened.
+echo "checking a before the clone cannot resolve skips the check"
+expect_pass "an unresolvable before" "$CLONE" "$UNKNOWN_SHA" "$sloppy_branch" dev
+grep -q "before is not an ancestor of after" "$WORK/out"
 
-# The fallback base equals the pushed head here; the last version tag bounds the range instead.
-# The release plugin's pre-conventional commit after that tag passes.
-echo "checking a force-pushed default branch is checked since the last version tag"
-expect_failure "a force-pushed default branch" "Update README.md" "$CLONE" "$UNKNOWN_SHA" "$pushed_after" dev
-expect_not_reported "Initial import"
-expect_not_reported "[release] prepare for next development iteration"
+echo "checking a before that resolves but is not an ancestor also skips the check"
+expect_pass "a non-ancestor before" "$CLONE" "$sloppy_branch" "$clean_branch" dev
+grep -q "before is not an ancestor of after" "$WORK/out"
+
+# github.event.forced is the authoritative signal: skip on its say-so alone, even where before
+# still happens to be an ancestor of after.
+echo "checking a forced push skips the check even when before is an ancestor"
+expect_pass "a forced push" "$CLONE" "$pushed_before" "$sloppy_branch" dev true
+grep -q "the push was forced" "$WORK/out"
 
 # A main that stands at the release puts the pre-gate README commit into the new branch's range.
 echo "checking the default branch is selectable"
