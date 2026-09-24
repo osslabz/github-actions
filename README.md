@@ -89,6 +89,46 @@ The version is also an output:
 It publishes nothing and knows no registry: the `deploy` step stays in the calling workflow,
 because where to publish is the caller's choice.
 
+### Installing a branch's snapshot locally
+
+`snapshot-version/install-local.sh` applies the same rule to `mvn install`, so a branch build
+cannot shadow the integration branch's coordinate in `~/.m2`.
+
+```
+cd ../codelabz-user-management
+../osslabz/github-actions/snapshot-version/install-local.sh
+```
+
+On the integration branch that is a plain `mvn install`. On any other branch it rewrites the
+poms, installs, and puts them back — unlike CI, this runs in a tree someone is working in, so
+the revert is in a trap and survives a failed install or a interrupted run.
+
+Without it, `mvn install` on a feature branch writes that build over `~/.m2`'s copy of the
+integration branch's snapshot, and every project depending on it compiles against the feature
+branch without saying so. `~/.m2` is per machine, so two machines sharing a checkout build
+different code from the same commit with no diff to explain it. That cost hodlfolio-v2 a
+morning in September 2026.
+
+A consuming project points at a branch build by naming the version in a property:
+
+```xml
+<codelabz-user-management.version>0.1.0-SNAPSHOT</codelabz-user-management.version>
+```
+
+```
+mvn -Dcodelabz-user-management.version="$(../osslabz/github-actions/snapshot-version/install-local.sh --print --directory ../codelabz-user-management)" test
+```
+
+| Option | Default | |
+| --- | --- | --- |
+| `--print` | | Print the version and stop. |
+| `--dry-run` | | Print the Maven commands and stop. |
+| `--directory` | `.` | The project to install. |
+| `--default-branch` | `dev` | The branch that keeps the plain version. |
+| `--pom` | `pom.xml` | The reactor's root pom. |
+
+Anything after `--` is passed to the `install` invocation.
+
 `versions-maven-plugin` is named in full, so no consuming repository has to pin it. The rewrite
 passes `-DupdateBuildOutputTimestampPolicy=never`, without which the plugin replaces
 `project.build.outputTimestamp` with the run's own clock and a reproducible build stops being

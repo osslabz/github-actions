@@ -31,6 +31,9 @@ jobs:
       - name: snapshot-version-tests
         run: snapshot-version/test/run.sh
 
+      - name: snapshot-version-install-local-tests
+        run: snapshot-version/test/install-local.sh
+
       - name: commit-subject-check-tests
         run: commit-subject-check/test/run.sh
 
