@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Runs the shell steps of .github/workflows/build.yml the way the runner does, against stubs
-# for mvn, docker and sudo, and checks that build.yml runs this repository's actions as they
+# for mvn, docker, sudo and brew, and checks that build.yml runs this repository's actions as they
 # are at HEAD.
 set -euo pipefail
 
@@ -14,7 +14,7 @@ readonly WORK
 trap 'rm -rf "$WORK"' EXIT
 
 readonly PLAN_DEFAULTS=(PUBLISH_TARGET=central PUBLISH_BRANCHES=dev IMAGE_BUILD=none IMAGE_NAMES=
-    SYSTEM_PACKAGES= HAS_CENTRAL_SECRETS=true BRANCH=dev ACTOR=octocat)
+    SYSTEM_PACKAGES= BREW_PACKAGES= HAS_CENTRAL_SECRETS=true BRANCH=dev ACTOR=octocat)
 
 # Prints the `run: |` block of the step with the given id without its indentation, which is
 # the script the runner writes for that step.
@@ -101,14 +101,26 @@ mkdir -p "$WORK/bin" "$WORK/project"
 write_stub "$WORK/bin/mvn"
 write_stub "$WORK/bin/docker"
 write_stub "$WORK/bin/sudo"
+write_stub "$WORK/bin/brew"
 
-for id in plan system-packages maven-build push-images; do
+readonly RUNNER_BREW=/home/linuxbrew/.linuxbrew/bin/brew
+
+for id in plan system-packages brew-packages maven-build push-images; do
     step_script "$id" > "$WORK/$id.sh"
     if [ ! -s "$WORK/$id.sh" ]; then
         echo "build.yml has no run block for the step with id $id" >&2
         exit 1
     fi
 done
+
+# Homebrew is not on the runner's PATH, so a bare `brew` would not be found there. The stub
+# on PATH stands in for the absolute path once the step is known to use it.
+echo "checking brew is called by the runner's absolute path"
+if ! grep -qF "$RUNNER_BREW install" "$WORK/brew-packages.sh"; then
+    echo "the brew-packages step must call $RUNNER_BREW" >&2
+    exit 1
+fi
+sed -i "s#$RUNNER_BREW #brew #" "$WORK/brew-packages.sh"
 
 echo "checking no run block interpolates an expression"
 # shellcheck disable=SC2016 # the literal characters are what the check looks for
@@ -160,10 +172,15 @@ expect_plan_failure "image name '*'" IMAGE_BUILD=spring-boot-goal IMAGE_NAMES='*
 expect_plan true deploy false SYSTEM_PACKAGES="tesseract-ocr libtesseract-dev"
 expect_plan_failure "system package '-oAPT::Get::Assume-Yes=1'" \
     SYSTEM_PACKAGES="tesseract-ocr -oAPT::Get::Assume-Yes=1"
+expect_plan true deploy false BREW_PACKAGES="tesseract python@3.14 gtk+3 zlib-ng-compat"
+expect_plan_failure "brew package '--HEAD'" BREW_PACKAGES="tesseract --HEAD"
+expect_plan_failure "brew package 'Tesseract'" BREW_PACKAGES="Tesseract"
+expect_plan_failure "brew package '*'" BREW_PACKAGES='*'
 
 echo "checking list inputs split on newlines too, as a YAML block passes them"
 expect_plan true deploy true IMAGE_BUILD=pom-bound IMAGE_NAMES=$'web-private\nweb-public'
 expect_plan true deploy false SYSTEM_PACKAGES=$'tesseract-ocr\nlibtesseract-dev'
+expect_plan true deploy false BREW_PACKAGES=$'tesseract\nleptonica'
 
 echo "checking the system packages are installed after an index update"
 run_step system-packages SYSTEM_PACKAGES="tesseract-ocr libtesseract-dev"
@@ -172,6 +189,10 @@ expect_calls sudo apt-get update sudo apt-get install -y tesseract-ocr libtesser
 echo "checking system packages split on newlines are all installed"
 run_step system-packages SYSTEM_PACKAGES=$'tesseract-ocr\nlibtesseract-dev'
 expect_calls sudo apt-get update sudo apt-get install -y tesseract-ocr libtesseract-dev
+
+echo "checking brew packages split on newlines are all installed"
+run_step brew-packages BREW_PACKAGES=$'tesseract\nleptonica'
+expect_calls brew install tesseract leptonica
 
 echo "checking the Maven run for a verify"
 run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=none

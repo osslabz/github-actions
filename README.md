@@ -270,11 +270,12 @@ run on `dev` is never cancelled, so two deploys of one snapshot coordinate never
 | `maven-arguments` | empty | More arguments, split on spaces and passed as written, e.g. `-DskipTests` for tests that need live services. |
 | `java-version` | `25` | The JDK the build runs on. |
 | `system-packages` | empty | apt packages installed before the build, e.g. a native library a test loads. |
+| `brew-packages` | empty | Homebrew formulae installed before the build, for a native library whose apt version is too old. Only the libraries are for the build, in `/home/linuxbrew/.linuxbrew/lib`, which the project points its loader at. |
 | `image-build` | `none` | `spring-boot-goal`: the Maven run adds `spring-boot:build-image-no-fork` after its lifecycle phase. `pom-bound`: the pom binds the image build to a phase itself, in each module that builds one. |
 | `image-names` | empty | The artifactIds whose images are pushed as `ghcr.io/<owner>/<artifactId>:<version>`. Required with an `image-build`. |
 
-`maven-arguments`, `system-packages` and `image-names` split on whitespace, spaces or newlines
-alike, so a YAML block scalar works the same as a single line.
+`maven-arguments`, `system-packages`, `brew-packages` and `image-names` split on whitespace,
+spaces or newlines alike, so a YAML block scalar works the same as a single line.
 
 | Secret | For | |
 | --- | --- | --- |
@@ -299,6 +300,7 @@ The steps, and why each is there:
 | `checkout` | Full history for `check-commit-subjects` and for plugins that read git. No persisted token: nothing in the build pushes. |
 | `check-commit-subjects` | [commit-subject-check](#commit-subject-check) on the pushed range. |
 | `install-system-packages` | Only with `system-packages`. The names are checked first, so no option reaches `apt-get`. |
+| `install-brew-packages` | Only with `brew-packages`. Homebrew comes with the runner at `/home/linuxbrew`, off `PATH`, and stays off it: the formulae's binaries would shadow the system's in the Maven run. Names are checked like the apt ones. The runner image sets `HOMEBREW_NO_AUTO_UPDATE`, which keeps the formula data the image was built with; the step clears it, so formula data comes from Homebrew's API on every run and the bottles are the latest. No cache: it would save the download, not the install. |
 | `setup-jdk` | JDK, Maven cache and the target's server. Dependabot branches read the cache but never save to it: their poms miss it, and the entry would be readable from that branch only. |
 | `set-snapshot-version` | [snapshot-version](#snapshot-version), after `setup-jdk`, whose cache key hashes the poms. |
 | `maven-build` | `deploy` in a run that publishes, `verify` otherwise, with the project's `./mvnw` where there is one. `install` is skipped: nothing reads the local repository afterwards, and the project's own artifacts would otherwise fill the Maven cache. Images are built in every run, so an update that breaks the image never goes green. |

@@ -34,6 +34,11 @@ on:
         required: false
         type: string
         default: ''
+      brew-packages:
+        description: Homebrew formulae the build needs, separated by spaces, for versions apt lags behind.
+        required: false
+        type: string
+        default: ''
       image-build:
         description: >-
           `none`, `spring-boot-goal` (the Maven run adds spring-boot:build-image-no-fork) or
@@ -80,6 +85,7 @@ jobs:
           IMAGE_BUILD: ${{ inputs.image-build }}
           IMAGE_NAMES: ${{ inputs.image-names }}
           SYSTEM_PACKAGES: ${{ inputs.system-packages }}
+          BREW_PACKAGES: ${{ inputs.brew-packages }}
           HAS_CENTRAL_SECRETS: ${{ secrets.central-username != '' && secrets.central-token != '' }}
           BRANCH: ${{ github.ref_name }}
           ACTOR: ${{ github.actor }}
@@ -114,11 +120,16 @@ jobs:
               || fail "image name '${name}' is not a repository name ghcr.io takes"
           done
 
-          # A name only, so no option reaches apt-get.
+          # A name only, so no option reaches apt-get or brew.
           read -r -d '' -a packages <<< "$SYSTEM_PACKAGES" || true
           for package in "${packages[@]}"; do
             [[ "$package" =~ ^[a-z0-9][a-z0-9.+-]+$ ]] \
               || fail "system package '${package}' is not a Debian package name"
+          done
+          read -r -d '' -a formulae <<< "$BREW_PACKAGES" || true
+          for formula in "${formulae[@]}"; do
+            [[ "$formula" =~ ^[a-z0-9][a-z0-9@+._-]*$ ]] \
+              || fail "brew package '${formula}' is not a Homebrew formula name"
           done
 
           # Dependabot's runs hold only Dependabot secrets and a read-only token.
@@ -167,6 +178,21 @@ jobs:
           read -r -d '' -a packages <<< "$SYSTEM_PACKAGES" || true
           sudo apt-get update
           sudo apt-get install -y "${packages[@]}"
+
+      # Homebrew is preinstalled on the runner but kept off PATH, where its formulae's binaries
+      # would shadow the system's. The runner image sets HOMEBREW_NO_AUTO_UPDATE, which keeps the
+      # formula data the image was built with; cleared, brew fetches it from Homebrew's API.
+      - name: install-brew-packages
+        id: brew-packages
+        if: inputs.brew-packages != ''
+        env:
+          BREW_PACKAGES: ${{ inputs.brew-packages }}
+          HOMEBREW_NO_AUTO_UPDATE: ''
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+          HOMEBREW_NO_ENV_HINTS: '1'
+        run: |
+          read -r -d '' -a formulae <<< "$BREW_PACKAGES" || true
+          /home/linuxbrew/.linuxbrew/bin/brew install "${formulae[@]}"
 
       - name: setup-jdk
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
