@@ -196,34 +196,34 @@ expect_calls brew install tesseract leptonica
 
 echo "checking the Maven run for a verify"
 run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=none
-expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true verify
+expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true verify
 
 echo "checking profiles, the image goal and extra arguments reach the Maven run"
 run_step maven-build GOAL=deploy MAVEN_PROFILES=coverage,publish \
     MAVEN_ARGUMENTS="-DskipTests  -Dspring-boot.build-image.skip=true" IMAGE_BUILD=spring-boot-goal
-expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true deploy -P coverage,publish \
+expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true deploy -P coverage,publish \
     spring-boot:build-image-no-fork -DskipTests -Dspring-boot.build-image.skip=true
 
 echo "checking extra arguments split on newlines are all passed"
 run_step maven-build GOAL=verify MAVEN_PROFILES= \
     MAVEN_ARGUMENTS=$'-DskipTests\n-Dspring-boot.build-image.skip=true' IMAGE_BUILD=none
-expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true verify \
+expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true verify \
     -DskipTests -Dspring-boot.build-image.skip=true
 
 echo "checking a pom-bound image adds nothing to the Maven run"
 run_step maven-build GOAL=deploy MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=pom-bound
-expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true deploy
+expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true deploy
 
 echo "checking an argument is passed as written, never globbed"
 touch -- "$WORK/project/-Dpattern=a.txt"
 run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS="-Dpattern=*.txt" IMAGE_BUILD=none
-expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true verify "-Dpattern=*.txt"
+expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true verify "-Dpattern=*.txt"
 rm -- "$WORK/project/-Dpattern=a.txt"
 
 echo "checking the project's Maven wrapper is preferred"
 write_stub "$WORK/project/mvnw"
 run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=none
-expect_calls mvnw --batch-mode --update-snapshots -Dmaven.install.skip=true verify
+expect_calls mvnw --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true verify
 rm "$WORK/project/mvnw"
 
 echo "checking each image is tagged for ghcr.io under the lower-cased owner and pushed"

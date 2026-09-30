@@ -219,6 +219,8 @@ jobs:
       # reads the local repository afterwards, so install is skipped and the project's own
       # artifacts stay out of the Maven cache. Central credentials only where the run
       # publishes; GitHub Packages resolves with the token too, so every run gets it.
+      # deployAtEnd holds every module's upload until the last one built, so a failing module
+      # publishes nothing.
       - name: maven-build
         id: maven-build
         env:
@@ -231,7 +233,7 @@ jobs:
           PACKAGES_TOKEN: ${{ inputs.publish-target == 'github-packages' && (secrets.packages-token || github.token) || '' }}
         run: |
           if [ -x ./mvnw ]; then maven=./mvnw; else maven=mvn; fi
-          args=(--batch-mode --update-snapshots -Dmaven.install.skip=true "$GOAL")
+          args=(--batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true "$GOAL")
           if [ -n "$MAVEN_PROFILES" ]; then
             args+=(-P "$MAVEN_PROFILES")
           fi
