@@ -211,7 +211,7 @@ jobs:
       # first would miss that cache on every branch but dev.
       - name: set-snapshot-version
         id: snapshot
-        uses: osslabz/github-actions/snapshot-version@148d84d35f4fd2aa03100ca481607b3f03850afa
+        uses: osslabz/github-actions/snapshot-version@f6999316261a1ab5eb7cd92a2c35b67c81289f66
         with:
           default-branch: dev
 
