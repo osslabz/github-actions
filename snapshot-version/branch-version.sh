@@ -23,9 +23,9 @@ fi
 
 # A Spring Boot application's root pom inherits spring-boot-starter-parent, whose <version>
 # comes first in the file and is not the project's. Drop the <parent> element, then the first
-# <version> left is the project's own.
-version="$(sed '/<parent>/,/<\/parent>/d' "$pom" \
-    | sed -n '/<version>/{s:.*<version>\(.*\)</version>.*:\1:p;q;}')"
+# <version> left is the project's own. One sed does both, so quitting there leaves no writer
+# behind to die on a closed pipe under pipefail.
+version="$(sed -n '/<parent>/,/<\/parent>/d; /<version>/{s:.*<version>\(.*\)</version>.*:\1:p;q;}' "$pom")"
 
 if [ -z "$version" ]; then
     echo "cannot read a version from '$pom'" >&2

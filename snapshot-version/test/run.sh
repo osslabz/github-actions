@@ -83,6 +83,17 @@ cat > "$POM" <<'POM'
 POM
 expect_version dev "0.0.1-SNAPSHOT"
 expect_version feat/thing "0.0.1-feat-thing-SNAPSHOT"
+
+# Reading stops at the first <version>, long before a real pom's dependencies end; whatever
+# is still being read from the rest of the file must not fail the derivation.
+echo "checking a pom that goes on past its version is read"
+{
+    echo "<project>"
+    echo "    <version>0.2.1-SNAPSHOT</version>"
+    for _ in $(seq 20000); do echo "    <!-- a dependency declared after the version -->"; done
+    echo "</project>"
+} > "$POM"
+expect_version dev "0.2.1-SNAPSHOT"
 write_pom "0.2.1-SNAPSHOT"
 
 echo "checking a branch name that is all separators is refused"
