@@ -12,6 +12,7 @@ another organisation, nor from a public repository at all.
 | [build.yml](#build) | reusable workflow | the project's `build-on-push.yml` |
 | [snapshot-version](#snapshot-version) | composite action | `build.yml`, or a project's own build |
 | [commit-subject-check](#commit-subject-check) | composite action | `build.yml`, or a project's own build |
+| [package-prune](#package-prune) | composite action | `build.yml`, or a one-off cleanup from a checkout |
 | [release.yml](#release) | reusable workflow | the project's `release.yml` |
 | [dependabot-auto-merge.yml](#dependabot-auto-merge) | reusable workflow | the project's `dependabot-auto-merge.yml` |
 
@@ -27,7 +28,7 @@ fast-forwards to the latest release tag. It keeps four files:
   workflows. build-on-push runs on `push` to every branch but `main` and on
   `workflow_dispatch`: the shared workflows find it by this file name, wait for it and
   dispatch it. A project whose build `build.yml` does not cover keeps a build-on-push of its
-  own under that name and uses the two composite actions directly.
+  own under that name and uses the composite actions directly.
 - `.github/dependabot.yml`.
 
 The pom carries maven-release-plugin with
@@ -47,7 +48,7 @@ Third-party and GitHub-owned actions are pinned by commit SHA with the version a
 here and in the projects, because a tag can be moved to other code. Dependabot keeps the pins
 current in one grouped pull request a week. Projects use this repository's own actions and
 workflows at `@v1`: same owner, and a SHA would turn every change here into a pull request
-everywhere. `build.yml` names its two actions by commit instead (see [Releasing](#releasing)).
+everywhere. `build.yml` names its three actions by commit instead (see [Releasing](#releasing)).
 
 ## snapshot-version
 
@@ -188,6 +189,56 @@ starts. The replaced push's own commits are then never checked.
 | `after` | `github.event.after` | The branch's commit after the push. |
 | `forced` | `github.event.forced` | Whether the push was a force-push. |
 
+## package-prune
+
+Deletes the Maven versions a repository published to GitHub Packages once no build will ask for
+them again. GitHub bills Maven storage, and a snapshot version keeps every timestamped build
+pushed to it. Images on ghcr.io cost nothing and are left alone.
+
+| Version | Deleted when |
+| --- | --- |
+| `1.3.0-feat-x-SNAPSHOT` | no live branch slugs to `feat-x` the way [snapshot-version](#snapshot-version) slugs a branch name |
+| `1.2.0-SNAPSHOT` | the package holds a release at or after `1.2.0` (`sort -V`) and it is not `current-version` |
+| `1.2.0`, `current-version`, any other shape | never |
+
+A slug cannot be turned back into a branch name: `feat/x` and `feat-x` share one, so a live
+branch keeps every version its slug matches. When every version of a package is stale the
+package itself goes, since GitHub refuses to delete a package's last version; a version
+published in between goes with it, restorable for 30 days.
+
+Nothing is deleted when the branch list lacks the default branch, or when more versions are
+stale than the cap of 50. Only this repository's packages are touched. Every decision
+is logged, the token's scopes too, and the delete list goes to the step summary.
+
+```yaml
+- uses: osslabz/github-actions/package-prune@v1
+  with:
+    current-version: ${{ steps.snapshot.outputs.version }}
+    mode: delete
+    token: ${{ secrets.PACKAGES_TOKEN }}
+```
+
+`delete` needs a classic token with `read:packages`, `delete:packages` and `repo`. A refused
+delete fails the step with an error naming the scope. A run that finds nothing stale deletes
+nothing, so any token that can read the packages passes it.
+
+For a one-off cleanup, the script runs from a checkout with the token in `GH_TOKEN`;
+`--max-deletions <n>` raises the cap for that run:
+
+```
+GH_TOKEN=<classic token> package-prune/prune.sh --owner osslabz --repository <repo> \
+    --default-branch dev --current-version <x.y.z-SNAPSHOT> --mode dry-run
+```
+
+| Input | Default | |
+| --- | --- | --- |
+| `current-version` | required | The version the default branch builds now, `x.y.z-SNAPSHOT`. Always kept. |
+| `default-branch` | `dev` | The branch that publishes the plain snapshot. A branch list without it deletes nothing. |
+| `mode` | `dry-run` | `dry-run` logs what would go; `delete` deletes it. |
+| `token` | `github.token` | Reads packages and branches, and deletes in `delete` mode. |
+| `owner` | `github.repository_owner` | The organisation or user that owns the packages. |
+| `repository` | `github.event.repository.name` | The repository whose packages are pruned. |
+
 ## build
 
 Builds a project on every push but to `main`: checks the pushed commit subjects, gives the
@@ -273,6 +324,7 @@ run on `dev` is never cancelled, so two deploys of one snapshot coordinate never
 | `brew-packages` | empty | Homebrew formulae installed before the build, for a native library whose apt version is too old. Only the libraries are for the build, in `/home/linuxbrew/.linuxbrew/lib`, which the project points its loader at. |
 | `image-build` | `none` | `spring-boot-goal`: the Maven run adds `spring-boot:build-image-no-fork` after its lifecycle phase. `pom-bound`: the pom binds the image build to a phase itself, in each module that builds one. |
 | `image-names` | empty | The artifactIds whose images are pushed as `ghcr.io/<owner>/<artifactId>:<version>`. Required with an `image-build`. |
+| `prune-packages` | `dry-run` | What `dev`'s build does with the Maven versions on GitHub Packages that no build asks for again, see [package-prune](#package-prune). `dry-run` logs them, `delete` deletes them, `off` skips the step. Only with `github-packages`. |
 
 `maven-arguments`, `system-packages`, `brew-packages` and `image-names` split on whitespace,
 spaces or newlines alike, so a YAML block scalar works the same as a single line.
@@ -280,7 +332,7 @@ spaces or newlines alike, so a YAML block scalar works the same as a single line
 | Secret | For | |
 | --- | --- | --- |
 | `central-username`, `central-token` | `central` | Central Portal user token. Maven gets it only in runs that publish. |
-| `packages-token` | `github-packages` | A classic token with `read:packages`, plus `write:packages` where it publishes. Empty: the job's own token. |
+| `packages-token` | `github-packages` | A classic token with `read:packages`, plus `write:packages` where it publishes, plus `delete:packages` and `repo` with `prune-packages: delete`. Empty: the job's own token. |
 
 GitHub Packages resolves and deploys through one server, `github`. The job's own token deploys
 to the repository's package but cannot read the owner's other private packages; a build that
@@ -306,6 +358,7 @@ The steps, and why each is there:
 | `set-snapshot-version` | [snapshot-version](#snapshot-version), after `setup-jdk`, whose cache key hashes the poms. |
 | `maven-build` | `deploy` in a run that publishes, `verify` otherwise, with the project's `./mvnw` where there is one. `install` is skipped: nothing reads the local repository afterwards, and the project's own artifacts would otherwise fill the Maven cache. `-DdeployAtEnd=true` holds every module's upload until the last module is built, so a multi-module build whose tests fail publishes nothing; Central's publishing plugin already waits on its own. Images are built in every run, so an update that breaks the image never goes green. |
 | `push-images` | Only in runs that publish. Spring Boot names each image `<artifactId>:<version>`; this tags it for `ghcr.io` and pushes it with the job's token. |
+| `prune-packages` | Only on `dev` in a run that publishes to GitHub Packages, unless `prune-packages` is `off`. [package-prune](#package-prune) with `packages-token`, or the job's token, keeping the version this run published. Last, so it cannot hold a publish back. A dry run never fails the build: it may lack the right to list the packages. |
 
 ## release
 
@@ -474,19 +527,20 @@ git push --force origin v1
 Moving `v1` changes every caller's next run at once. A change a caller has to adapt to goes to
 `v2`. Dependabot's updates of the pins here reach callers the same way, with the next tag.
 
-`build.yml` runs `commit-subject-check` and `snapshot-version` at the commit its `uses:` lines
-name, not at `@v1`: `uses:` takes no expression, so a reusable workflow cannot name the commit
-it runs from. A change to either action lands first; a second commit points `build.yml` at it.
-`test/build-workflow.sh` fails while it lags behind, so the two commits push together:
-`test.yml` runs on the pushed head, and a push that stops at the action's commit alone leaves
-that head red until the pin-bumping commit joins it.
+`build.yml` runs `commit-subject-check`, `snapshot-version` and `package-prune` at the commit
+its `uses:` lines name, not at `@v1`: `uses:` takes no expression, so a reusable workflow
+cannot name the commit it runs from. A change to any of them lands first; a second commit
+points `build.yml` at it. `test/build-workflow.sh` fails while it lags behind, so the two
+commits push together: `test.yml` runs on the pushed head, and a push that stops at the
+action's commit alone leaves that head red until the pin-bumping commit joins it.
 
 ## Tests
 
 `test.yml` runs on every push: the scripts' tests (`snapshot-version/test/run.sh`,
-`commit-subject-check/test/run.sh`, bash and git only); `test/build-workflow.sh`, which runs
-`build.yml`'s shell steps against stubs for `mvn`, `docker` and `sudo`, checks its pinned
-actions and that `release.yml`'s `declare-central-origin` step matches its own; both composite
-actions run the way a caller runs them; `commit-subject-check` on this repository's own
-pushes; actionlint over every workflow; and shellcheck over the scripts. Both linters are
-downloaded and checked against their published checksums.
+`commit-subject-check/test/run.sh`, bash and git only; `package-prune/test/run.sh`, against a
+stub `gh`); `test/build-workflow.sh`, which runs `build.yml`'s shell steps against stubs for
+`mvn`, `docker` and `sudo`, checks its pinned actions and that `release.yml`'s
+`declare-central-origin` step matches its own; `snapshot-version` and `commit-subject-check`
+run the way a caller runs them; `commit-subject-check` on this repository's own pushes;
+actionlint over every workflow; and shellcheck over the scripts. Both linters are downloaded
+and checked against their published checksums.

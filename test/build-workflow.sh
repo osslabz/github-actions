@@ -15,7 +15,8 @@ readonly WORK
 trap 'rm -rf "$WORK"' EXIT
 
 readonly PLAN_DEFAULTS=(PUBLISH_TARGET=central PUBLISH_BRANCHES=dev IMAGE_BUILD=none IMAGE_NAMES=
-    SYSTEM_PACKAGES= BREW_PACKAGES= HAS_CENTRAL_SECRETS=true BRANCH=dev ACTOR=octocat)
+    SYSTEM_PACKAGES= BREW_PACKAGES= HAS_CENTRAL_SECRETS=true BRANCH=dev ACTOR=octocat
+    PRUNE_PACKAGES=dry-run)
 
 # Prints the `run: |` block of the step with the given id in the given workflow without its
 # indentation, which is the script the runner writes for that step.
@@ -60,14 +61,14 @@ run_step() {
 }
 
 expect_plan() {
-    local publish="$1" goal="$2" push_images="$3" pair
-    shift 3
+    local publish="$1" goal="$2" push_images="$3" prune="$4" pair
+    shift 4
     if ! run_step plan "${PLAN_DEFAULTS[@]}" "$@"; then
         echo "check-inputs failed for: $*" >&2
         cat "$WORK/log" >&2
         exit 1
     fi
-    for pair in "publish=$publish" "goal=$goal" "push-images=$push_images"; do
+    for pair in "publish=$publish" "goal=$goal" "push-images=$push_images" "prune=$prune"; do
         if ! grep -qxF -- "$pair" "$WORK/output"; then
             echo "expected $pair for: $*" >&2
             cat "$WORK/output" >&2
@@ -131,29 +132,29 @@ if grep -nF '${{' "$WORK"/*.sh; then
 fi
 
 echo "checking dev publishes and a feature branch verifies"
-expect_plan true deploy false
-expect_plan false verify false BRANCH=feat/decoder
+expect_plan true deploy false false
+expect_plan false verify false false BRANCH=feat/decoder
 
 # Expression comparisons ignore case; the branch that publishes is exactly dev.
 echo "checking a branch named Dev is not dev"
-expect_plan false verify false BRANCH=Dev
+expect_plan false verify false false BRANCH=Dev
 
 echo "checking every branch publishes when publish-branches is all"
-expect_plan true deploy false PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all BRANCH=feat/decoder
+expect_plan true deploy false false PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all BRANCH=feat/decoder
 
 echo "checking Dependabot's runs never publish"
-expect_plan false verify false ACTOR='dependabot[bot]'
-expect_plan false verify false PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all \
+expect_plan false verify false false ACTOR='dependabot[bot]'
+expect_plan false verify false false PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all \
     ACTOR='dependabot[bot]' BRANCH=dependabot/maven/org.foo-bar-1.2.3
 
 echo "checking images are pushed only by runs that publish"
-expect_plan true deploy true PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all \
+expect_plan true deploy true false PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all \
     IMAGE_BUILD=spring-boot-goal IMAGE_NAMES=my-app BRANCH=feat/decoder
-expect_plan false verify false PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all \
+expect_plan false verify false false PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all \
     IMAGE_BUILD=pom-bound IMAGE_NAMES="web-private web-public" ACTOR='dependabot[bot]'
 
 echo "checking a run that only verifies needs no Central secrets"
-expect_plan false verify false HAS_CENTRAL_SECRETS=false BRANCH=feat/decoder
+expect_plan false verify false false HAS_CENTRAL_SECRETS=false BRANCH=feat/decoder
 expect_plan_failure "publishing to Central needs the secrets central-username and central-token" \
     HAS_CENTRAL_SECRETS=false
 
@@ -167,21 +168,35 @@ expect_plan_failure "image-names needs image-build spring-boot-goal or pom-bound
 expect_plan_failure "image-build pom-bound needs image-names" IMAGE_BUILD=pom-bound
 
 echo "checking image and package names are checked, globs included"
-expect_plan true deploy true IMAGE_BUILD=pom-bound IMAGE_NAMES="web-private web_2 web.public"
+expect_plan true deploy true false IMAGE_BUILD=pom-bound IMAGE_NAMES="web-private web_2 web.public"
 expect_plan_failure "image name 'My-App'" IMAGE_BUILD=pom-bound IMAGE_NAMES="web My-App"
 expect_plan_failure "image name '*'" IMAGE_BUILD=spring-boot-goal IMAGE_NAMES='*'
-expect_plan true deploy false SYSTEM_PACKAGES="tesseract-ocr libtesseract-dev"
+expect_plan true deploy false false SYSTEM_PACKAGES="tesseract-ocr libtesseract-dev"
 expect_plan_failure "system package '-oAPT::Get::Assume-Yes=1'" \
     SYSTEM_PACKAGES="tesseract-ocr -oAPT::Get::Assume-Yes=1"
-expect_plan true deploy false BREW_PACKAGES="tesseract python@3.14 gtk+3 zlib-ng-compat"
+expect_plan true deploy false false BREW_PACKAGES="tesseract python@3.14 gtk+3 zlib-ng-compat"
 expect_plan_failure "brew package '--HEAD'" BREW_PACKAGES="tesseract --HEAD"
 expect_plan_failure "brew package 'Tesseract'" BREW_PACKAGES="Tesseract"
 expect_plan_failure "brew package '*'" BREW_PACKAGES='*'
 
 echo "checking list inputs split on newlines too, as a YAML block passes them"
-expect_plan true deploy true IMAGE_BUILD=pom-bound IMAGE_NAMES=$'web-private\nweb-public'
-expect_plan true deploy false SYSTEM_PACKAGES=$'tesseract-ocr\nlibtesseract-dev'
-expect_plan true deploy false BREW_PACKAGES=$'tesseract\nleptonica'
+expect_plan true deploy true false IMAGE_BUILD=pom-bound IMAGE_NAMES=$'web-private\nweb-public'
+expect_plan true deploy false false SYSTEM_PACKAGES=$'tesseract-ocr\nlibtesseract-dev'
+expect_plan true deploy false false BREW_PACKAGES=$'tesseract\nleptonica'
+
+echo "checking a dev build that publishes to GitHub Packages prunes them"
+expect_plan true deploy false true PUBLISH_TARGET=github-packages
+expect_plan true deploy false true PUBLISH_TARGET=github-packages PRUNE_PACKAGES=delete
+
+# Only dev prunes, once per integration, and only GitHub Packages bills the storage.
+echo "checking no other build prunes"
+expect_plan true deploy false false PRUNE_PACKAGES=delete
+expect_plan true deploy false false PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all \
+    BRANCH=feat/decoder
+expect_plan true deploy false false PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all BRANCH=Dev
+expect_plan false verify false false PUBLISH_TARGET=github-packages ACTOR='dependabot[bot]'
+expect_plan true deploy false false PUBLISH_TARGET=github-packages PRUNE_PACKAGES=off
+expect_plan_failure "prune-packages is 'Delete'; it must be off, dry-run or delete" PRUNE_PACKAGES=Delete
 
 echo "checking the system packages are installed after an index update"
 run_step system-packages SYSTEM_PACKAGES="tesseract-ocr libtesseract-dev"
@@ -309,7 +324,7 @@ if grep -qx push "$WORK/calls"; then
 fi
 
 echo "checking build.yml runs this repository's actions as they are at HEAD"
-for action in commit-subject-check snapshot-version; do
+for action in commit-subject-check snapshot-version package-prune; do
     pin="$(sed -n "s#^ *uses: osslabz/github-actions/${action}@\([0-9a-f]\{40\}\)\$#\1#p" "$WORKFLOW")"
     if [ -z "$pin" ]; then
         echo "build.yml names no commit for $action" >&2
