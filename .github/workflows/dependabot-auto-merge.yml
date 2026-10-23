@@ -5,6 +5,14 @@ name: dependabot-auto-merge
 
 on:
   workflow_call:
+    inputs:
+      timeout-minutes:
+        description: >-
+          The merge job's time limit in minutes. It waits for the build, so it stays above the
+          build's own limit.
+        required: false
+        type: number
+        default: 40
 
 jobs:
   # Read-only: fetch-metadata never needs contents or pull-requests write, and isolating it
@@ -37,8 +45,8 @@ jobs:
     # failure.
     if: github.actor == 'dependabot[bot]' && github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
-    # Waits for the build, which is bounded at 30 minutes.
-    timeout-minutes: 40
+    # Waits for the build; the default suits the build's default limit of 30 minutes.
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     # Scoped to the pull request: a Dependabot push that supersedes an in-progress merge
     # attempt for it cancels that attempt rather than racing it. Job-level and left off
     # build-merged-dev, so cancelling an attempt here never cancels the dispatch that follows

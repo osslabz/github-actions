@@ -326,6 +326,7 @@ run on `dev` is never cancelled, so two deploys of one snapshot coordinate never
 | `image-names` | empty | The artifactIds whose images are pushed as `ghcr.io/<owner>/<artifactId>:<version>`. Required with an `image-build`. |
 | `prune-packages` | `dry-run` | What `dev`'s build does with the Maven versions on GitHub Packages that no build asks for again, see [package-prune](#package-prune). `dry-run` logs them, `delete` deletes them, `off` skips the step. Only with `github-packages`. |
 | `resolve-from-github-packages` | `true` | The build reads the owner's private packages from GitHub Packages, so Maven gets `packages-token` in every run. `false`: only in runs that publish. |
+| `timeout-minutes` | `30` | The job's time limit. |
 
 `maven-arguments`, `system-packages`, `brew-packages` and `image-names` split on whitespace,
 spaces or newlines alike, so a YAML block scalar works the same as a single line.
@@ -425,6 +426,7 @@ because a called workflow can only lower them.
 | `release-arguments` | empty | Passed as `-Darguments`, which reaches the builds both goals fork, e.g. `-DskipTests` for tests that need live services. A pom that sets `<arguments>` itself wins over it. |
 | `release-version` | empty | `x.y.z` to release instead of what the commit subjects imply, e.g. a deliberate 1.0.0 or a repository whose tags confuse the policy. |
 | `java-version` | `25` | The JDK the release builds with. |
+| `timeout-minutes` | `60` | The job's time limit. The default leaves room for `central-publishing-maven-plugin`, which waits up to 30 minutes for Central. |
 
 | Secret | For | |
 | --- | --- | --- |
@@ -490,6 +492,10 @@ jobs:
 
 A run Dependabot triggers gets a read-only token unless `permissions` raises it, as the caller
 does, and no Actions secrets, which this workflow does not use.
+
+| Input | Default | |
+| --- | --- | --- |
+| `timeout-minutes` | `40` | The merge job's time limit. It waits for the build, so a caller that raises the build's `timeout-minutes` raises this one above it. |
 
 What merges: Maven patch and minor updates, and every GitHub Actions update, except a major of
 this repository's own workflows, which waits for a human like a Maven major does:

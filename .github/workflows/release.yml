@@ -28,6 +28,13 @@ on:
         required: false
         type: string
         default: '25'
+      timeout-minutes:
+        description: >-
+          The job's time limit in minutes. The default leaves room for central-publishing-maven-plugin,
+          which waits up to 30 minutes for Central to publish.
+        required: false
+        type: number
+        default: 60
     secrets:
       central-username:
         description: Central Portal token user name (publish-target central).
@@ -48,8 +55,7 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
-    # central-publishing-maven-plugin waits up to 30 minutes for Central to publish.
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     # A second dispatch waits for this one rather than racing it to the push. It then checks
     # out the SHA dev was at when it was dispatched, not this run's result, so it is the
     # preflight's dev-moved check below, not this alone, that refuses it.

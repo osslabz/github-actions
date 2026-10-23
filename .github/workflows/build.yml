@@ -65,6 +65,11 @@ on:
         required: false
         type: boolean
         default: true
+      timeout-minutes:
+        description: The job's time limit in minutes.
+        required: false
+        type: number
+        default: 30
     secrets:
       central-username:
         description: Central Portal token user name (publish-target central).
@@ -79,7 +84,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     # No `permissions`: the job holds what the caller grants, since a called workflow can only
     # lower them. `contents: read`, plus `packages: write` where the job's token deploys to
     # GitHub Packages or pushes an image.
