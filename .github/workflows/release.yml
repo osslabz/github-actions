@@ -161,6 +161,20 @@ jobs:
           # The name maven-gpg-plugin reads by default, so setup-java adds nothing to settings.xml.
           gpg-passphrase-env-var: MAVEN_GPG_PASSPHRASE
 
+      # Maven 3.10 sends a server's credentials only to the origins of the repositories with its
+      # id, and `central` is repo.maven.apache.org's; setup-java cannot declare origins yet.
+      # test/build-workflow.sh runs build.yml's copy of this step and checks the two match.
+      - name: declare-central-origin
+        id: declare-central-origin
+        if: inputs.publish-target == 'central'
+        run: |
+          settings="$HOME/.m2/settings.xml"
+          if ! grep -qx ' *<id>central</id>' "$settings"; then
+            echo "::error::$settings has no server central to declare Central's origin for"
+            exit 1
+          fi
+          sed -i '/^ *<id>central<\/id>$/a\      <repositoryOrigins><repositoryOrigin>https://central.sonatype.com</repositoryOrigin></repositoryOrigins>' "$settings"
+
       # The identity checkout documents for commits made with the built-in token.
       - name: configure-git-user
         run: |

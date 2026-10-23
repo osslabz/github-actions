@@ -207,6 +207,19 @@ jobs:
           server-username-env-var: ${{ inputs.publish-target == 'central' && 'MAVEN_USERNAME' || 'GITHUB_ACTOR' }}
           server-password-env-var: ${{ inputs.publish-target == 'central' && 'MAVEN_PASSWORD' || 'PACKAGES_TOKEN' }}
 
+      # Maven 3.10 sends a server's credentials only to the origins of the repositories with its
+      # id, and `central` is repo.maven.apache.org's; setup-java cannot declare origins yet.
+      - name: declare-central-origin
+        id: declare-central-origin
+        if: inputs.publish-target == 'central'
+        run: |
+          settings="$HOME/.m2/settings.xml"
+          if ! grep -qx ' *<id>central</id>' "$settings"; then
+            echo "::error::$settings has no server central to declare Central's origin for"
+            exit 1
+          fi
+          sed -i '/^ *<id>central<\/id>$/a\      <repositoryOrigins><repositoryOrigin>https://central.sonatype.com</repositoryOrigin></repositoryOrigins>' "$settings"
+
       # After setup-jdk, which keys its Maven cache on the poms' contents: rewriting them
       # first would miss that cache on every branch but dev.
       - name: set-snapshot-version
