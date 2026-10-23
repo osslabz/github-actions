@@ -1,11 +1,20 @@
 version: 2
 updates:
-  # The pins in .github/workflows, the reusable workflows' included. The composite actions
-  # use no other action. Updates reach callers only with the next v1 tag, after review here.
+  # The pins in .github/workflows, the reusable workflows' included, and in each composite
+  # action, whose directory "/" does not read. Updates reach callers only with the next v1 tag,
+  # after review here.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/commit-subject-check"
+      - "/package-prune"
+      - "/snapshot-version"
     schedule:
       interval: "weekly"
+    # The reusable workflows release with the callers' Central and signing secrets. A week
+    # gives a compromised release time to surface first; security updates are not delayed.
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "chore"
       include: "scope"

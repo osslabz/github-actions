@@ -46,9 +46,10 @@ every other commit:
 
 Third-party and GitHub-owned actions are pinned by commit SHA with the version as a comment,
 here and in the projects, because a tag can be moved to other code. Dependabot keeps the pins
-current in one grouped pull request a week. Projects use this repository's own actions and
-workflows at `@v1`: same owner, and a SHA would turn every change here into a pull request
-everywhere. `build.yml` names its three actions by commit instead (see [Releasing](#releasing)).
+current in one grouped pull request a week, and offers a version only a week after its
+release. Projects use this repository's own actions and workflows at `@v1`: same owner, and a
+SHA would turn every change here into a pull request everywhere. `build.yml` names its three
+actions by commit instead (see [Releasing](#releasing)).
 
 ## snapshot-version
 
