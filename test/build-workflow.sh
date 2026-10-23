@@ -16,7 +16,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 readonly PLAN_DEFAULTS=(PUBLISH_TARGET=central PUBLISH_BRANCHES=dev IMAGE_BUILD=none IMAGE_NAMES=
     SYSTEM_PACKAGES= BREW_PACKAGES= HAS_CENTRAL_SECRETS=true BRANCH=dev ACTOR=octocat
-    PRUNE_PACKAGES=dry-run)
+    PRUNE_PACKAGES=dry-run RESOLVE_FROM_GITHUB_PACKAGES=true)
 
 # Prints the `run: |` block of the step with the given id in the given workflow without its
 # indentation, which is the script the runner writes for that step.
@@ -60,21 +60,38 @@ run_step() {
         bash --noprofile --norc -eo pipefail "$WORK/$id.sh") < /dev/null > "$WORK/log" 2>&1
 }
 
-expect_plan() {
-    local publish="$1" goal="$2" push_images="$3" prune="$4" pair
-    shift 4
+run_plan() {
     if ! run_step plan "${PLAN_DEFAULTS[@]}" "$@"; then
         echo "check-inputs failed for: $*" >&2
         cat "$WORK/log" >&2
         exit 1
     fi
+}
+
+expect_output() {
+    local pair="$1"
+    shift
+    if ! grep -qxF -- "$pair" "$WORK/output"; then
+        echo "expected $pair for: $*" >&2
+        cat "$WORK/output" >&2
+        exit 1
+    fi
+}
+
+expect_plan() {
+    local publish="$1" goal="$2" push_images="$3" prune="$4" pair
+    shift 4
+    run_plan "$@"
     for pair in "publish=$publish" "goal=$goal" "push-images=$push_images" "prune=$prune"; do
-        if ! grep -qxF -- "$pair" "$WORK/output"; then
-            echo "expected $pair for: $*" >&2
-            cat "$WORK/output" >&2
-            exit 1
-        fi
+        expect_output "$pair" "$@"
     done
+}
+
+expect_packages_token() {
+    local expected="$1"
+    shift
+    run_plan "$@"
+    expect_output "packages-token=$expected" "$@"
 }
 
 expect_plan_failure() {
@@ -146,6 +163,19 @@ echo "checking Dependabot's runs never publish"
 expect_plan false verify false false ACTOR='dependabot[bot]'
 expect_plan false verify false false PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all \
     ACTOR='dependabot[bot]' BRANCH=dependabot/maven/org.foo-bar-1.2.3
+
+echo "checking Maven gets the packages token where it publishes or resolves the owner's packages"
+expect_packages_token false
+expect_packages_token true PUBLISH_TARGET=github-packages
+expect_packages_token true PUBLISH_TARGET=github-packages RESOLVE_FROM_GITHUB_PACKAGES=false
+expect_packages_token false PUBLISH_TARGET=github-packages RESOLVE_FROM_GITHUB_PACKAGES=false BRANCH=feat/decoder
+expect_packages_token true PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all RESOLVE_FROM_GITHUB_PACKAGES=false \
+    BRANCH=feat/decoder
+expect_packages_token false PUBLISH_TARGET=github-packages RESOLVE_FROM_GITHUB_PACKAGES=false \
+    ACTOR='dependabot[bot]' BRANCH=dependabot/maven/org.foo-bar-1.2.3
+expect_packages_token true PUBLISH_TARGET=github-packages BRANCH=feat/decoder
+expect_packages_token true PUBLISH_TARGET=github-packages ACTOR='dependabot[bot]' \
+    BRANCH=dependabot/maven/org.foo-bar-1.2.3
 
 echo "checking images are pushed only by runs that publish"
 expect_plan true deploy true false PUBLISH_TARGET=github-packages PUBLISH_BRANCHES=all \

@@ -58,6 +58,13 @@ on:
         required: false
         type: string
         default: dry-run
+      resolve-from-github-packages:
+        description: >-
+          Whether the build resolves the owner's private packages from GitHub Packages, which gives
+          Maven packages-token in every run. false gives it the token only in runs that publish.
+        required: false
+        type: boolean
+        default: true
     secrets:
       central-username:
         description: Central Portal token user name (publish-target central).
@@ -82,8 +89,9 @@ jobs:
         shell: bash
 
     steps:
-      # Fails a mistyped input before anything runs, and decides whether this run publishes.
-      # In bash, because expression comparisons ignore case and a branch `Dev` is not dev.
+      # Fails a mistyped input before anything runs, and decides whether this run publishes and
+      # whether Maven gets the packages token. In bash, because expression comparisons ignore
+      # case and a branch `Dev` is not dev.
       - name: check-inputs
         id: plan
         env:
@@ -94,6 +102,7 @@ jobs:
           SYSTEM_PACKAGES: ${{ inputs.system-packages }}
           BREW_PACKAGES: ${{ inputs.brew-packages }}
           PRUNE_PACKAGES: ${{ inputs.prune-packages }}
+          RESOLVE_FROM_GITHUB_PACKAGES: ${{ inputs.resolve-from-github-packages }}
           HAS_CENTRAL_SECRETS: ${{ secrets.central-username != '' && secrets.central-token != '' }}
           BRANCH: ${{ github.ref_name }}
           ACTOR: ${{ github.actor }}
@@ -163,13 +172,21 @@ jobs:
             && [ "$PRUNE_PACKAGES" != off ]; then
             prune=true
           fi
+          # Maven holds the packages token where it deploys with it, and in every run of a caller
+          # that resolves the owner's private packages from GitHub Packages.
+          packages_token=false
+          if [ "$PUBLISH_TARGET" = github-packages ] \
+            && { [ "$publish" = true ] || [ "$RESOLVE_FROM_GITHUB_PACKAGES" = true ]; }; then
+            packages_token=true
+          fi
           {
             echo "publish=${publish}"
             echo "goal=${goal}"
             echo "push-images=${push_images}"
             echo "prune=${prune}"
+            echo "packages-token=${packages_token}"
           } >> "$GITHUB_OUTPUT"
-          echo "publish: ${publish}, goal: ${goal}, push images: ${push_images}, prune: ${prune}"
+          echo "publish: ${publish}, goal: ${goal}, push images: ${push_images}, prune: ${prune}, packages token: ${packages_token}"
 
       # Full history for commit-subject-check and for plugins that read git. No persisted
       # token: nothing in the build pushes.
@@ -248,10 +265,9 @@ jobs:
 
       # One Maven run builds, publishes and, with spring-boot-goal, builds the image. Nothing
       # reads the local repository afterwards, so install is skipped and the project's own
-      # artifacts stay out of the Maven cache. Central credentials only where the run
-      # publishes; GitHub Packages resolves with the token too, so every run gets it.
-      # deployAtEnd holds every module's upload until the last one built, so a failing module
-      # publishes nothing.
+      # artifacts stay out of the Maven cache. Central credentials only where the run publishes;
+      # the packages token where check-inputs says so. deployAtEnd holds every module's upload
+      # until the last one built, so a failing module publishes nothing.
       - name: maven-build
         id: maven-build
         env:
@@ -261,7 +277,7 @@ jobs:
           IMAGE_BUILD: ${{ inputs.image-build }}
           MAVEN_USERNAME: ${{ steps.plan.outputs.publish == 'true' && secrets.central-username || '' }}
           MAVEN_PASSWORD: ${{ steps.plan.outputs.publish == 'true' && secrets.central-token || '' }}
-          PACKAGES_TOKEN: ${{ inputs.publish-target == 'github-packages' && (secrets.packages-token || github.token) || '' }}
+          PACKAGES_TOKEN: ${{ steps.plan.outputs.packages-token == 'true' && (secrets.packages-token || github.token) || '' }}
         run: |
           if [ -x ./mvnw ]; then maven=./mvnw; else maven=mvn; fi
           args=(--batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true "$GOAL")

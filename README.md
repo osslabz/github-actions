@@ -325,6 +325,7 @@ run on `dev` is never cancelled, so two deploys of one snapshot coordinate never
 | `image-build` | `none` | `spring-boot-goal`: the Maven run adds `spring-boot:build-image-no-fork` after its lifecycle phase. `pom-bound`: the pom binds the image build to a phase itself, in each module that builds one. |
 | `image-names` | empty | The artifactIds whose images are pushed as `ghcr.io/<owner>/<artifactId>:<version>`. Required with an `image-build`. |
 | `prune-packages` | `dry-run` | What `dev`'s build does with the Maven versions on GitHub Packages that no build asks for again, see [package-prune](#package-prune). `dry-run` logs them, `delete` deletes them, `off` skips the step. Only with `github-packages`. |
+| `resolve-from-github-packages` | `true` | The build reads the owner's private packages from GitHub Packages, so Maven gets `packages-token` in every run. `false`: only in runs that publish. |
 
 `maven-arguments`, `system-packages`, `brew-packages` and `image-names` split on whitespace,
 spaces or newlines alike, so a YAML block scalar works the same as a single line.
@@ -336,9 +337,14 @@ spaces or newlines alike, so a YAML block scalar works the same as a single line
 
 GitHub Packages resolves and deploys through one server, `github`. The job's own token deploys
 to the repository's package but cannot read the owner's other private packages; a build that
-depends on them passes `packages-token`. Dependabot's runs see Dependabot secrets only: a
-Dependabot secret of the same name with `read:packages` alone covers them, since they never
-publish.
+depends on them passes `packages-token`.
+
+Maven gets the token in runs that publish, and in every run while `resolve-from-github-packages`
+is on. A build that resolves nothing from GitHub Packages turns it off, so Maven holds no token
+that can publish in a run that only verifies, Dependabot's included.
+
+Dependabot's runs see Dependabot secrets only: a Dependabot secret of the same name with
+`read:packages` alone covers them, since they never publish.
 
 The job declares no `permissions`. A called workflow can lower the caller's but never raise
 them, so it holds what the caller grants: `contents: read`, plus `packages: write` where the
@@ -348,7 +354,7 @@ The steps, and why each is there:
 
 | Step | Why |
 | --- | --- |
-| `check-inputs` | Fails a mistyped input before anything runs, and decides whether the run publishes: on `dev`, or on every branch with `all`, never for Dependabot, whose runs hold a read-only token. Compared in bash, because expression comparisons ignore case and a branch `Dev` is not `dev`. Publishing to Central without its secrets fails here rather than at the upload. |
+| `check-inputs` | Fails a mistyped input before anything runs, decides whether Maven gets the packages token, and decides whether the run publishes: on `dev`, or on every branch with `all`, never for Dependabot, whose runs hold a read-only token. Compared in bash, because expression comparisons ignore case and a branch `Dev` is not `dev`. Publishing to Central without its secrets fails here rather than at the upload. |
 | `checkout` | Full history for `check-commit-subjects` and for plugins that read git. No persisted token: nothing in the build pushes. |
 | `check-commit-subjects` | [commit-subject-check](#commit-subject-check) on the pushed range. |
 | `install-system-packages` | Only with `system-packages`. The names are checked first, so no option reaches `apt-get`. |
