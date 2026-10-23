@@ -1,0 +1,45 @@
+name: package-prune
+description: >
+  Deletes the Maven versions a repository published to GitHub Packages that no build will ask
+  for again: a branch's snapshot once its branch is gone, a plain snapshot once it is released.
+  GitHub bills Maven storage and never expires a snapshot on its own.
+
+inputs:
+  current-version:
+    description: The version the default branch builds now. It is kept whatever else holds.
+    required: true
+  default-branch:
+    description: >
+      The branch that publishes the plain snapshot. A branch list without it is taken as
+      incomplete, and nothing is deleted.
+    default: dev
+  mode:
+    description: dry-run logs what would go; delete deletes it.
+    default: dry-run
+  token:
+    description: >
+      Reads packages and branches, and in delete mode deletes versions, which needs a classic
+      PAT with delete:packages. A workflow's GITHUB_TOKEN passes as long as nothing is stale.
+    default: ${{ github.token }}
+  owner:
+    description: The organization or user that owns the packages.
+    default: ${{ github.repository_owner }}
+  repository:
+    description: The repository whose packages are pruned. Other repositories' are left alone.
+    default: ${{ github.event.repository.name }}
+
+runs:
+  using: composite
+  steps:
+    - name: prune
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        OWNER: ${{ inputs.owner }}
+        REPOSITORY: ${{ inputs.repository }}
+        DEFAULT_BRANCH: ${{ inputs.default-branch }}
+        CURRENT_VERSION: ${{ inputs.current-version }}
+        MODE: ${{ inputs.mode }}
+      run: |
+        "${{ github.action_path }}/prune.sh" --owner "$OWNER" --repository "$REPOSITORY" \
+          --default-branch "$DEFAULT_BRANCH" --current-version "$CURRENT_VERSION" --mode "$MODE"
