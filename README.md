@@ -51,6 +51,31 @@ release. Projects use this repository's own actions and workflows at `@v1`: same
 SHA would turn every change here into a pull request everywhere. `build.yml` names its three
 actions by commit instead (see [Releasing](#releasing)).
 
+### Quality gates
+
+`build.yml` runs `verify`, or `deploy` where it publishes, and `release:prepare` runs
+`clean verify` before it tags. A gate bound to `verify` holds back every merge, every snapshot
+and every release. Bind these in the pom:
+
+| Gate | Plugin | Goal | Phase |
+| --- | --- | --- | --- |
+| Formatting | `spotless-maven-plugin` | `check` | `verify` |
+| Bug patterns | `spotbugs-maven-plugin` | `check` | `verify` |
+| Complexity metrics | `maven-checkstyle-plugin` | `check` | `verify` |
+| Code smells | `maven-pmd-plugin` | `check` | `verify` |
+| Coverage floor | `jacoco-maven-plugin` | `prepare-agent`, `check` | `verify` for `check` |
+| Dependency upper bounds | `maven-enforcer-plugin` | `enforce` with `requireUpperBoundDeps` | `validate` |
+
+Pin every plugin and tool version in the pom. Keep each tool's config under `config/` and
+reach it through `${maven.multiModuleProjectDirectory}`, so a module's build finds it too.
+Checkstyle checks metrics only, as formatting belongs to Spotless. The coverage floors are
+properties, so raising one is a one-line commit.
+
+Spotless only checks on CI. A profile active while `env.CI` is unset runs `spotless:apply` at
+`process-sources`, so a local build fixes the formatting before `verify` checks it. peekaboot's
+[BUILD.md](https://github.com/peekaboot-org/peekaboot/blob/dev/BUILD.md#quality-gates) has
+the full setup and the reasoning behind each exclusion.
+
 ## snapshot-version
 
 Gives a branch's build a Maven version of its own, so every branch can publish a snapshot
