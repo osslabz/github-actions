@@ -2,14 +2,13 @@
 #
 # Runs the shell steps of .github/workflows/build.yml the way the runner does, against stubs
 # for mvn, docker, sudo and brew, and checks that build.yml runs this repository's actions as they
-# are at HEAD. release.yml's declare-central-origin step must match build.yml's.
+# are at HEAD.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly HERE
 readonly ROOT="$HERE/.."
 readonly WORKFLOW="$ROOT/.github/workflows/build.yml"
-readonly RELEASE_WORKFLOW="$ROOT/.github/workflows/release.yml"
 WORK="$(mktemp -d)"
 readonly WORK
 trap 'rm -rf "$WORK"' EXIT
@@ -124,7 +123,7 @@ write_stub "$WORK/bin/brew"
 
 readonly RUNNER_BREW=/home/linuxbrew/.linuxbrew/bin/brew
 
-for id in plan system-packages brew-packages declare-central-origin maven-build push-images; do
+for id in plan system-packages brew-packages maven-build push-images; do
     step_script "$WORKFLOW" "$id" > "$WORK/$id.sh"
     if [ ! -s "$WORK/$id.sh" ]; then
         echo "build.yml has no run block for the step with id $id" >&2
@@ -239,58 +238,6 @@ expect_calls sudo apt-get update sudo apt-get install -y tesseract-ocr libtesser
 echo "checking brew packages split on newlines are all installed"
 run_step brew-packages BREW_PACKAGES=$'tesseract\nleptonica'
 expect_calls brew install tesseract leptonica
-
-echo "checking release.yml declares Central's origin as build.yml does"
-if ! diff <(step_script "$RELEASE_WORKFLOW" declare-central-origin) "$WORK/declare-central-origin.sh"; then
-    echo "release.yml's declare-central-origin step differs from build.yml's" >&2
-    exit 1
-fi
-
-# Prints the settings.xml setup-java writes for the given server id, joined with newlines and
-# no final one, with any further lines after the server's id.
-setup_java_settings() {
-    local id="$1"
-    shift
-    # shellcheck disable=SC2016 # setup-java writes the ${env.*} references literally
-    printf '%s\n' \
-        '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"' \
-        '  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"' \
-        '  xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">' \
-        '  <interactiveMode>false</interactiveMode>' \
-        '  <servers>' \
-        '    <server>' \
-        "      <id>$id</id>" \
-        "$@" \
-        '      <username>${env.MAVEN_USERNAME}</username>' \
-        '      <password>${env.MAVEN_PASSWORD}</password>' \
-        '    </server>' \
-        '  </servers>'
-    printf '</settings>'
-}
-
-mkdir -p "$WORK/home/.m2"
-
-echo "checking Central's origin is declared on the central server"
-setup_java_settings central > "$WORK/home/.m2/settings.xml"
-run_step declare-central-origin HOME="$WORK/home"
-if ! diff <(setup_java_settings central \
-        '      <repositoryOrigins><repositoryOrigin>https://central.sonatype.com</repositoryOrigin></repositoryOrigins>') \
-        "$WORK/home/.m2/settings.xml"; then
-    echo "unexpected settings.xml (< expected, > actual)" >&2
-    exit 1
-fi
-
-echo "checking a settings.xml without the central server fails the step"
-setup_java_settings github > "$WORK/home/.m2/settings.xml"
-if run_step declare-central-origin HOME="$WORK/home"; then
-    echo "expected declare-central-origin to fail without the central server" >&2
-    exit 1
-fi
-if ! grep -qF "::error::$WORK/home/.m2/settings.xml has no server central" "$WORK/log"; then
-    echo "expected an error naming the missing server" >&2
-    cat "$WORK/log" >&2
-    exit 1
-fi
 
 echo "checking the Maven run for a verify"
 run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=none

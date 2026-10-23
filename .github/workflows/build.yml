@@ -235,7 +235,7 @@ jobs:
           /home/linuxbrew/.linuxbrew/bin/brew install "${formulae[@]}"
 
       - name: setup-jdk
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           java-version: ${{ inputs.java-version }}
           distribution: 'temurin'
@@ -246,19 +246,9 @@ jobs:
           server-id: ${{ inputs.publish-target == 'central' && 'central' || 'github' }}
           server-username-env-var: ${{ inputs.publish-target == 'central' && 'MAVEN_USERNAME' || 'GITHUB_ACTOR' }}
           server-password-env-var: ${{ inputs.publish-target == 'central' && 'MAVEN_PASSWORD' || 'PACKAGES_TOKEN' }}
-
-      # Maven 3.10 sends a server's credentials only to the origins of the repositories with its
-      # id, and `central` is repo.maven.apache.org's; setup-java cannot declare origins yet.
-      - name: declare-central-origin
-        id: declare-central-origin
-        if: inputs.publish-target == 'central'
-        run: |
-          settings="$HOME/.m2/settings.xml"
-          if ! grep -qx ' *<id>central</id>' "$settings"; then
-            echo "::error::$settings has no server central to declare Central's origin for"
-            exit 1
-          fi
-          sed -i '/^ *<id>central<\/id>$/a\      <repositoryOrigins><repositoryOrigin>https://central.sonatype.com</repositoryOrigin></repositoryOrigins>' "$settings"
+          # Maven 3.10 sends a server's credentials only to the origins declared for it, and
+          # `central` is repo.maven.apache.org's. setup-java fails on an unconfigured server id.
+          mvn-server-repository-origins: ${{ inputs.publish-target == 'central' && 'central:https://central.sonatype.com' || '' }}
 
       # After setup-jdk, which keys its Maven cache on the poms' contents: rewriting them
       # first would miss that cache on every branch but dev.
