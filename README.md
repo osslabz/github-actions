@@ -241,7 +241,7 @@ is logged, the token's scopes too, and the delete list goes to the step summary.
   with:
     current-version: ${{ steps.snapshot.outputs.version }}
     mode: delete
-    token: ${{ secrets.PACKAGES_TOKEN }}
+    token: ${{ secrets.PAT_ORG_ACCESS }}
 ```
 
 The token must be a classic one with `read:packages` and `repo`, plus `delete:packages` for
@@ -319,7 +319,7 @@ runner and skips its tests:
       maven-arguments: -DskipTests
       system-packages: tesseract-ocr libtesseract-dev
     secrets:
-      packages-token: ${{ secrets.PACKAGES_TOKEN }}
+      packages-token: ${{ secrets.PAT_ORG_ACCESS }}
 ```
 
 A Spring Boot application whose image the same Maven run builds:
@@ -337,7 +337,7 @@ A Spring Boot application whose image the same Maven run builds:
       image-build: spring-boot-goal
       image-names: my-app
     secrets:
-      packages-token: ${{ secrets.PACKAGES_TOKEN }}
+      packages-token: ${{ secrets.PAT_ORG_ACCESS }}
 ```
 
 Triggers and concurrency stay in the caller. A newer push cancels a running branch build; a
@@ -441,7 +441,7 @@ Publishing to GitHub Packages instead, with tests skipped in the release's build
       release-arguments: -DskipTests
       release-version: ${{ inputs.releaseVersion }}
     secrets:
-      packages-token: ${{ secrets.PACKAGES_TOKEN }}
+      packages-token: ${{ secrets.PAT_ORG_ACCESS }}
 ```
 
 Secrets are passed by name: `secrets: inherit` does not cross organisations, and naming them
