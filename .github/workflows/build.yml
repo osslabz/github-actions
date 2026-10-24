@@ -55,9 +55,10 @@ on:
         description: >-
           `off`, `dry-run` or `delete`: what dev's build does with the Maven versions on GitHub
           Packages that no build asks for again. `dry-run` only logs them and never fails the build.
+          `delete` needs packages-token to be a classic PAT with delete:packages.
         required: false
         type: string
-        default: dry-run
+        default: delete
       resolve-from-github-packages:
         description: >-
           Whether the build resolves the owner's private packages from GitHub Packages, which gives
@@ -78,7 +79,7 @@ on:
         description: Central Portal token password (publish-target central).
         required: false
       packages-token:
-        description: Token for GitHub Packages that also reads the owner's other packages (publish-target github-packages), and deletes with prune-packages delete. Empty uses the job's token.
+        description: Classic PAT for GitHub Packages (publish-target github-packages) with read:packages and write:packages, which also reads the owner's other packages; prune-packages delete adds delete:packages and repo. Empty uses the job's token, which cannot prune.
         required: false
 
 jobs:
@@ -309,7 +310,7 @@ jobs:
         id: prune-packages
         if: steps.plan.outputs.prune == 'true'
         continue-on-error: ${{ inputs.prune-packages == 'dry-run' }}
-        uses: osslabz/github-actions/package-prune@a36b6792eb1c7f8f3cdcc429f59a032d6d6d8d3c
+        uses: osslabz/github-actions/package-prune@5570c2800c71e87d223daf0586b72237f0ec00f8
         with:
           default-branch: dev
           current-version: ${{ steps.snapshot.outputs.version }}

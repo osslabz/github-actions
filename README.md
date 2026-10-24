@@ -354,7 +354,7 @@ run on `dev` is never cancelled, so two deploys of one snapshot coordinate never
 | `brew-packages` | empty | Homebrew formulae installed before the build, for a native library whose apt version is too old. Only the libraries are for the build, in `/home/linuxbrew/.linuxbrew/lib`, which the project points its loader at. |
 | `image-build` | `none` | `spring-boot-goal`: the Maven run adds `spring-boot:build-image-no-fork` after its lifecycle phase. `pom-bound`: the pom binds the image build to a phase itself, in each module that builds one. |
 | `image-names` | empty | The artifactIds whose images are pushed as `ghcr.io/<owner>/<artifactId>:<version>`. Required with an `image-build`. |
-| `prune-packages` | `dry-run` | What `dev`'s build does with the Maven versions on GitHub Packages that no build asks for again, see [package-prune](#package-prune). `dry-run` logs them, `delete` deletes them, `off` skips the step. Only with `github-packages`. |
+| `prune-packages` | `delete` | What `dev`'s build does with the Maven versions on GitHub Packages that no build asks for again, see [package-prune](#package-prune). `delete` deletes them and needs `packages-token`, `dry-run` logs them, `off` skips the step. Only with `github-packages`. |
 | `resolve-from-github-packages` | `true` | The build reads the owner's private packages from GitHub Packages, so Maven gets `packages-token` in every run. `false`: only in runs that publish. |
 | `timeout-minutes` | `30` | The job's time limit. |
 
@@ -364,7 +364,7 @@ spaces or newlines alike, so a YAML block scalar works the same as a single line
 | Secret | For | |
 | --- | --- | --- |
 | `central-username`, `central-token` | `central` | Central Portal user token. Maven gets it only in runs that publish. |
-| `packages-token` | `github-packages` | A classic token with `read:packages`, plus `write:packages` where it publishes, plus `delete:packages` and `repo` with `prune-packages: delete`. Empty: the job's own token. |
+| `packages-token` | `github-packages` | A classic token with `read:packages`, plus `write:packages` where it publishes, plus `delete:packages` and `repo` with `prune-packages: delete`. Empty: the job's own token, which cannot prune, so `delete` fails the build. |
 
 GitHub Packages resolves and deploys through one server, `github`. The job's own token deploys
 to the repository's package but cannot read the owner's other private packages; a build that
@@ -394,7 +394,7 @@ The steps, and why each is there:
 | `set-snapshot-version` | [snapshot-version](#snapshot-version), after `setup-jdk`, whose cache key hashes the poms. |
 | `maven-build` | `deploy` in a run that publishes, `verify` otherwise, with the project's `./mvnw` where there is one. `install` is skipped: nothing reads the local repository afterwards, and the project's own artifacts would otherwise fill the Maven cache. `-DdeployAtEnd=true` holds every module's upload until the last module is built, so a multi-module build whose tests fail publishes nothing; Central's publishing plugin already waits on its own. Images are built in every run, so an update that breaks the image never goes green. |
 | `push-images` | Only in runs that publish. Spring Boot names each image `<artifactId>:<version>`; this tags it for `ghcr.io` and pushes it with the job's token. |
-| `prune-packages` | Only on `dev` in a run that publishes to GitHub Packages, unless `prune-packages` is `off`. [package-prune](#package-prune) with `packages-token`, or the job's token, keeping the version this run published. Last, so it cannot hold a publish back. A dry run never fails the build: it may lack the right to list the packages. |
+| `prune-packages` | Only on `dev` in a run that publishes to GitHub Packages, unless `prune-packages` is `off`. [package-prune](#package-prune) with `packages-token`, or the job's token, keeping the version this run published. Last, so it cannot hold a publish back. `delete` fails the build when the token is not a classic one, or lacks `delete:packages` while something is stale. A dry run never fails the build. |
 
 ## release
 

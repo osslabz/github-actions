@@ -15,7 +15,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 readonly PLAN_DEFAULTS=(PUBLISH_TARGET=central PUBLISH_BRANCHES=dev IMAGE_BUILD=none IMAGE_NAMES=
     SYSTEM_PACKAGES= BREW_PACKAGES= HAS_CENTRAL_SECRETS=true BRANCH=dev ACTOR=octocat
-    PRUNE_PACKAGES=dry-run RESOLVE_FROM_GITHUB_PACKAGES=true)
+    PRUNE_PACKAGES=delete RESOLVE_FROM_GITHUB_PACKAGES=true)
 
 # Prints the `run: |` block of the step with the given id in the given workflow without its
 # indentation, which is the script the runner writes for that step.
@@ -215,7 +215,7 @@ expect_plan true deploy false false BREW_PACKAGES=$'tesseract\nleptonica'
 
 echo "checking a dev build that publishes to GitHub Packages prunes them"
 expect_plan true deploy false true PUBLISH_TARGET=github-packages
-expect_plan true deploy false true PUBLISH_TARGET=github-packages PRUNE_PACKAGES=delete
+expect_plan true deploy false true PUBLISH_TARGET=github-packages PRUNE_PACKAGES=dry-run
 
 # Only dev prunes, once per integration, and only GitHub Packages bills the storage.
 echo "checking no other build prunes"
