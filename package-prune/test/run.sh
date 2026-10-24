@@ -342,13 +342,58 @@ expect_status 0
 expect_deletes
 expect_output "token scopes: repo"
 
-new_case "a token that reports no scopes is logged as such"
+# Only a classic PAT reports scopes, and GitHub lists no Maven packages to any other token, so
+# the run would otherwise pass as "nothing to prune" without having looked.
+new_case "a dry run with a token that reports no scopes warns and lists nothing"
+owner_is Organization
+library 1.2.0 1.3.0-SNAPSHOT 1.3.0-feat-gone-SNAPSHOT
+branches dev
+run_prune --mode dry-run
+expect_status 0
+expect_deletes
+expect_output "token scopes: none reported"
+expect_output "::warning::"
+expect_output "packages-token"
+if grep -q 'packages?package_type=maven$' "$API/calls"; then fail "packages were listed"; fi
+
+new_case "delete mode with a token that reports no scopes fails and lists nothing"
 owner_is Organization
 library 1.2.0 1.3.0-SNAPSHOT
 branches dev
 run_prune
+expect_status 1
+expect_deletes
+expect_output "::error::"
+expect_output "packages-token"
+if grep -q 'packages?package_type=maven$' "$API/calls"; then fail "packages were listed"; fi
+
+new_case "delete mode without delete:packages fails before any delete"
+owner_is Organization "repo, write:packages"
+library 1.2.0 1.3.0-SNAPSHOT 1.3.0-feat-gone-SNAPSHOT
+branches dev
+run_prune
+expect_status 1
+expect_deletes
+expect_output "::error::"
+expect_output "delete:packages"
+expect_output "packages-token"
+
+new_case "delete:packages is found anywhere in the scope list"
+owner_is Organization "delete:packages, repo, write:packages"
+library 1.2.0 1.3.0-SNAPSHOT 1.3.0-feat-gone-SNAPSHOT
+branches dev
+run_prune
 expect_status 0
-expect_output "token scopes: none reported"
+expect_deletes "$LIB/versions/3"
+
+new_case "a dry run without delete:packages passes"
+owner_is Organization "repo, write:packages"
+library 1.2.0 1.3.0-SNAPSHOT 1.3.0-feat-gone-SNAPSHOT
+branches dev
+run_prune --mode dry-run
+expect_status 0
+expect_deletes
+expect_output "dry run: would delete net.acme.lib 1.3.0-feat-gone-SNAPSHOT"
 
 new_case "a dry run deletes nothing"
 library 1.2.0 1.3.0-SNAPSHOT 1.3.0-feat-gone-SNAPSHOT

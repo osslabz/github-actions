@@ -18,8 +18,9 @@ inputs:
     default: dry-run
   token:
     description: >
-      Reads packages and branches, and in delete mode deletes versions, which needs a classic
-      PAT with delete:packages. A workflow's GITHUB_TOKEN passes as long as nothing is stale.
+      Reads packages and branches, and in delete mode deletes versions: a classic PAT with
+      read:packages, plus delete:packages once something is stale. GitHub lists no Maven
+      packages to a workflow's GITHUB_TOKEN, so a dry run with it warns and delete mode fails.
     default: ${{ github.token }}
   owner:
     description: The organization or user that owns the packages.

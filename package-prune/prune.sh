@@ -12,7 +12,9 @@
 #
 # Usage: prune.sh --owner <owner> --repository <repo> --default-branch <branch>
 #                 --current-version <version> --mode dry-run|delete [--max-deletions <n>]
-# The token comes from GH_TOKEN, as for any gh call.
+# The token comes from GH_TOKEN, as for any gh call. It must be a classic PAT, the only kind
+# GitHub lists Maven packages to; delete mode refuses any other, and refuses one without
+# delete:packages once something is stale. A dry run with any other token warns and passes.
 set -euo pipefail
 
 readonly USAGE="Usage: prune.sh --owner <owner> --repository <repo> --default-branch <branch> \
@@ -96,6 +98,17 @@ owner_response="$(gh api -i "users/$owner" | tr -d '\r')"
 scopes="$(awk '/^$/ { exit } tolower($0) ~ /^x-oauth-scopes:/ { sub(/^[^:]*: */, ""); print }' \
     <<< "$owner_response")"
 echo "token scopes: ${scopes:-none reported}"
+# Only a classic PAT reports scopes, and GitHub lists no Maven packages to any other token: an
+# empty list would read as nothing to prune.
+if [ -z "$scopes" ]; then
+    message="the token is not a classic PAT, so it cannot see $owner's packages; set the packages-token secret to a classic PAT with read:packages and delete:packages"
+    if [ "$mode" = delete ]; then
+        echo "::error::$message"
+        exit 1
+    fi
+    echo "::warning::$message; nothing was checked"
+    exit 0
+fi
 owner_type="$(awk 'body { print } /^$/ { body = 1 }' <<< "$owner_response" | jq -r .type)"
 case "$owner_type" in
     Organization) packages_path="orgs/$owner/packages" ;;
@@ -175,6 +188,13 @@ if [ "$stale_count" -gt "$max_deletions" ]; then
         exit 1
     fi
     echo "::warning::$message; delete mode would delete nothing"
+fi
+
+# Checked only once something is stale, so a token that cannot delete still passes a run with
+# nothing to prune.
+if [ "$mode" = delete ] && ! tr ',' '\n' <<< "$scopes" | tr -d ' ' | grep -qxF delete:packages; then
+    echo "::error::the token lacks the delete:packages scope, so it cannot delete the $stale_count stale versions above; set the packages-token secret to a classic PAT that has it. Deleting nothing"
+    exit 1
 fi
 
 while IFS=$'\t' read -r package version id; do

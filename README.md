@@ -244,9 +244,13 @@ is logged, the token's scopes too, and the delete list goes to the step summary.
     token: ${{ secrets.PACKAGES_TOKEN }}
 ```
 
-`delete` needs a classic token with `read:packages`, `delete:packages` and `repo`. A refused
-delete fails the step with an error naming the scope. A run that finds nothing stale deletes
-nothing, so any token that can read the packages passes it.
+The token must be a classic one with `read:packages` and `repo`, plus `delete:packages` for
+`delete`. GitHub lists no Maven packages to any other token, a workflow's `GITHUB_TOKEN`
+included: with one, a dry run warns and checks nothing, and `delete` fails the step.
+
+`delete` fails before its first delete when something is stale and the token lacks
+`delete:packages`; a run with nothing stale passes without it. A refused delete fails the step
+with an error naming the scope.
 
 For a one-off cleanup, the script runs from a checkout with the token in `GH_TOKEN`;
 `--max-deletions <n>` raises the cap for that run:
@@ -261,7 +265,7 @@ GH_TOKEN=<classic token> package-prune/prune.sh --owner osslabz --repository <re
 | `current-version` | required | The version the default branch builds now, `x.y.z-SNAPSHOT`. Always kept. |
 | `default-branch` | `dev` | The branch that publishes the plain snapshot. A branch list without it deletes nothing. |
 | `mode` | `dry-run` | `dry-run` logs what would go; `delete` deletes it. |
-| `token` | `github.token` | Reads packages and branches, and deletes in `delete` mode. |
+| `token` | `github.token` | Reads packages and branches, and deletes in `delete` mode. A classic token, see above. |
 | `owner` | `github.repository_owner` | The organisation or user that owns the packages. |
 | `repository` | `github.event.repository.name` | The repository whose packages are pruned. |
 
