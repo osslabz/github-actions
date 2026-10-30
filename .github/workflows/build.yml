@@ -234,11 +234,41 @@ jobs:
           sudo apt-get install -y "${packages[@]}"
 
       # Homebrew is preinstalled on the runner but kept off PATH, where its formulae's binaries
-      # would shadow the system's. The runner image sets HOMEBREW_NO_AUTO_UPDATE, which keeps the
-      # formula data the image was built with; cleared, brew fetches it from Homebrew's API.
+      # would shadow the system's. The installed prefix is cached: pouring a formula and its
+      # dependencies takes minutes, restoring them seconds. The key holds the requested formulae's
+      # current versions and the runner's OS release, so a new version or a runner move installs
+      # afresh once; dependencies are refreshed with it.
+      - name: brew-cache-key
+        id: brew-cache-key
+        if: inputs.brew-packages != ''
+        env:
+          BREW_PACKAGES: ${{ inputs.brew-packages }}
+        run: |
+          read -r -d '' -a formulae <<< "$BREW_PACKAGES" || true
+          versions=""
+          for formula in "${formulae[@]}"; do
+            versions+="$(curl -fsS --retry 3 "https://formulae.brew.sh/api/formula/${formula}.json" \
+              | jq -r '"\(.name)-\(.versions.stable)_\(.revision)"') "
+          done
+          echo "formulae: ${versions}"
+          echo "key=brew-${ImageOS:?the runner sets ImageOS}-$(sha256sum <<< "$versions" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      # The kegs' RPATHs point into opt/, so the whole prefix comes back, brew's own code aside.
+      - name: restore-brew-packages
+        id: brew-cache
+        if: inputs.brew-packages != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /home/linuxbrew/.linuxbrew/*
+            !/home/linuxbrew/.linuxbrew/Homebrew
+          key: ${{ steps.brew-cache-key.outputs.key }}
+
+      # The runner image sets HOMEBREW_NO_AUTO_UPDATE, which keeps the formula data the image was
+      # built with; cleared, brew fetches it from Homebrew's API.
       - name: install-brew-packages
         id: brew-packages
-        if: inputs.brew-packages != ''
+        if: inputs.brew-packages != '' && steps.brew-cache.outputs.cache-hit != 'true'
         env:
           BREW_PACKAGES: ${{ inputs.brew-packages }}
           HOMEBREW_NO_AUTO_UPDATE: ''
@@ -247,6 +277,19 @@ jobs:
         run: |
           read -r -d '' -a formulae <<< "$BREW_PACKAGES" || true
           /home/linuxbrew/.linuxbrew/bin/brew install "${formulae[@]}"
+
+      # Saved before the Maven run, so a red build still keeps it. Dependabot branches restore but
+      # never save, like the Maven cache: the entry would be readable from that branch only.
+      - name: save-brew-packages
+        if: >-
+          inputs.brew-packages != '' && steps.brew-cache.outputs.cache-hit != 'true'
+          && !startsWith(github.ref_name, 'dependabot/')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            /home/linuxbrew/.linuxbrew/*
+            !/home/linuxbrew/.linuxbrew/Homebrew
+          key: ${{ steps.brew-cache-key.outputs.key }}
 
       - name: setup-jdk
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0

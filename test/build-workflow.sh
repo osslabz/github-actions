@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Runs the shell steps of .github/workflows/build.yml the way the runner does, against stubs
-# for mvn, docker, sudo and brew, and checks that build.yml runs this repository's actions as they
-# are at HEAD.
+# for mvn, docker, sudo, brew and curl, and checks that build.yml runs this repository's actions
+# as they are at HEAD.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -106,10 +106,30 @@ write_stub "$WORK/bin/mvn"
 write_stub "$WORK/bin/docker"
 write_stub "$WORK/bin/sudo"
 write_stub "$WORK/bin/brew"
+cat > "$WORK/bin/curl" <<STUB
+#!/usr/bin/env bash
+# Serves https://formulae.brew.sh/api/formula/<name>.json from $WORK/formulae/<name>.json and
+# fails as curl -f does for a formula it has not.
+for argument in "\$@"; do url="\$argument"; done
+printf '%s\n' curl "\$url" >> "$WORK/calls"
+if [ ! -f "$WORK/formulae/\$(basename "\$url")" ]; then
+    echo "curl: (22) The requested URL returned error: 404" >&2
+    exit 22
+fi
+cat "$WORK/formulae/\$(basename "\$url")"
+STUB
+chmod +x "$WORK/bin/curl"
+mkdir -p "$WORK/formulae"
+
+# formula <name> <version> <revision>
+formula() {
+    printf '{"name": "%s", "versions": {"stable": "%s"}, "revision": %s}\n' "$1" "$2" "$3" \
+        > "$WORK/formulae/$1.json"
+}
 
 readonly RUNNER_BREW=/home/linuxbrew/.linuxbrew/bin/brew
 
-for id in plan system-packages brew-packages maven-build push-images; do
+for id in plan system-packages brew-cache-key brew-packages maven-build push-images; do
     step_script "$WORKFLOW" "$id" > "$WORK/$id.sh"
     if [ ! -s "$WORK/$id.sh" ]; then
         echo "build.yml has no run block for the step with id $id" >&2
@@ -230,6 +250,50 @@ expect_calls sudo apt-get update sudo apt-get install -y tesseract-ocr libtesser
 echo "checking brew packages split on newlines are all installed"
 run_step brew-packages BREW_PACKAGES=$'tesseract\nleptonica'
 expect_calls brew install tesseract leptonica
+
+echo "checking the brew cache key follows the runner's OS and the formulae's versions"
+brew_cache_key() {
+    run_step brew-cache-key BREW_PACKAGES="$1" ImageOS="$2"
+    sed -n 's/^key=//p' "$WORK/output"
+}
+formula tesseract 5.5.4 0
+formula leptonica 1.87.0 0
+key="$(brew_cache_key $'tesseract\nleptonica' ubuntu24)"
+[[ "$key" =~ ^brew-ubuntu24-[0-9a-f]{64}$ ]] || { echo "unexpected brew cache key '$key'" >&2; exit 1; }
+expect_calls curl https://formulae.brew.sh/api/formula/tesseract.json \
+    curl https://formulae.brew.sh/api/formula/leptonica.json
+[ "$(brew_cache_key $'tesseract\nleptonica' ubuntu24)" = "$key" ] \
+    || { echo "the same formulae must give the same key" >&2; exit 1; }
+[ "$(brew_cache_key $'tesseract\nleptonica' ubuntu26)" != "$key" ] \
+    || { echo "another runner OS must give another key" >&2; exit 1; }
+formula leptonica 1.87.0 1
+[ "$(brew_cache_key $'tesseract\nleptonica' ubuntu24)" != "$key" ] \
+    || { echo "a new revision must give another key" >&2; exit 1; }
+if run_step brew-cache-key BREW_PACKAGES=tesseract ImageOS=; then
+    echo "a runner without ImageOS must fail the key step" >&2
+    exit 1
+fi
+
+echo "checking a formula Homebrew's API does not know fails the key step"
+if run_step brew-cache-key BREW_PACKAGES=$'tesseract\npython' ImageOS=ubuntu24; then
+    echo "a failed formula lookup must fail the key step" >&2
+    exit 1
+fi
+if grep -q '^key=' "$WORK/output"; then
+    echo "a failed formula lookup must not write a key" >&2
+    exit 1
+fi
+
+# actions/cache versions an entry by its path list, so a save under other paths is never restored.
+echo "checking the brew cache is saved under the paths it is restored from"
+brew_cache_paths() {
+    yq ".jobs.build.steps[] | select(.name == \"$1\") | .with.path" "$WORKFLOW"
+}
+if [ -z "$(brew_cache_paths restore-brew-packages)" ] \
+    || [ "$(brew_cache_paths restore-brew-packages)" != "$(brew_cache_paths save-brew-packages)" ]; then
+    echo "restore-brew-packages and save-brew-packages must name the same paths" >&2
+    exit 1
+fi
 
 echo "checking the Maven run for a verify"
 run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=none PUSH_IMAGES=false \
