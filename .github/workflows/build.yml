@@ -41,13 +41,21 @@ on:
         default: ''
       image-build:
         description: >-
-          `none`, `spring-boot-goal` (the Maven run adds spring-boot:build-image-no-fork) or
-          `pom-bound` (the pom binds the image build to a phase itself).
+          `none`, `spring-boot-goal` (in a run that pushes images, the Maven run adds
+          spring-boot:build-image-no-fork) or `pom-bound` (the pom binds the image build to a phase
+          itself).
         required: false
         type: string
         default: none
       image-names:
         description: The artifactIds whose images are pushed to ghcr.io/<owner>/<artifactId>:<version>, separated by spaces.
+        required: false
+        type: string
+        default: ''
+      image-maven-profiles:
+        description: >-
+          Profiles, comma-separated, in which a pom-bound image build is bound. Active only in runs
+          that push the image.
         required: false
         type: string
         default: ''
@@ -105,6 +113,7 @@ jobs:
           PUBLISH_BRANCHES: ${{ inputs.publish-branches }}
           IMAGE_BUILD: ${{ inputs.image-build }}
           IMAGE_NAMES: ${{ inputs.image-names }}
+          IMAGE_MAVEN_PROFILES: ${{ inputs.image-maven-profiles }}
           SYSTEM_PACKAGES: ${{ inputs.system-packages }}
           BREW_PACKAGES: ${{ inputs.brew-packages }}
           PRUNE_PACKAGES: ${{ inputs.prune-packages }}
@@ -141,6 +150,9 @@ jobs:
           fi
           if [ "$IMAGE_BUILD" != none ] && [ "${#image_names[@]}" -eq 0 ]; then
             fail "image-build ${IMAGE_BUILD} needs image-names"
+          fi
+          if [ -n "$IMAGE_MAVEN_PROFILES" ] && [ "$IMAGE_BUILD" != pom-bound ]; then
+            fail "image-maven-profiles needs image-build pom-bound"
           fi
           for name in "${image_names[@]}"; do
             [[ "$name" =~ ^[a-z0-9]+([._-][a-z0-9]+)*$ ]] \
@@ -259,7 +271,7 @@ jobs:
         with:
           default-branch: dev
 
-      # One Maven run builds, publishes and, with spring-boot-goal, builds the image. Nothing
+      # One Maven run builds, publishes and, in a run that pushes it, builds the image. Nothing
       # reads the local repository afterwards, so install is skipped and the project's own
       # artifacts stay out of the Maven cache. Central credentials only where the run publishes;
       # the packages token where check-inputs says so. deployAtEnd holds every module's upload
@@ -271,16 +283,22 @@ jobs:
           MAVEN_PROFILES: ${{ inputs.maven-profiles }}
           MAVEN_ARGUMENTS: ${{ inputs.maven-arguments }}
           IMAGE_BUILD: ${{ inputs.image-build }}
+          PUSH_IMAGES: ${{ steps.plan.outputs.push-images }}
+          IMAGE_MAVEN_PROFILES: ${{ inputs.image-maven-profiles }}
           MAVEN_USERNAME: ${{ steps.plan.outputs.publish == 'true' && secrets.central-username || '' }}
           MAVEN_PASSWORD: ${{ steps.plan.outputs.publish == 'true' && secrets.central-token || '' }}
           PACKAGES_TOKEN: ${{ steps.plan.outputs.packages-token == 'true' && (secrets.packages-token || github.token) || '' }}
         run: |
           if [ -x ./mvnw ]; then maven=./mvnw; else maven=mvn; fi
           args=(--batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true "$GOAL")
-          if [ -n "$MAVEN_PROFILES" ]; then
-            args+=(-P "$MAVEN_PROFILES")
+          profiles="$MAVEN_PROFILES"
+          if [ "$PUSH_IMAGES" = true ] && [ -n "$IMAGE_MAVEN_PROFILES" ]; then
+            profiles="${profiles:+${profiles},}${IMAGE_MAVEN_PROFILES}"
           fi
-          if [ "$IMAGE_BUILD" = spring-boot-goal ]; then
+          if [ -n "$profiles" ]; then
+            args+=(-P "$profiles")
+          fi
+          if [ "$PUSH_IMAGES" = true ] && [ "$IMAGE_BUILD" = spring-boot-goal ]; then
             args+=(spring-boot:build-image-no-fork)
           fi
           read -r -d '' -a extra_arguments <<< "$MAVEN_ARGUMENTS" || true

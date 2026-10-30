@@ -18,7 +18,7 @@ source "$HERE/workflow-steps.sh"
 
 readonly PLAN_DEFAULTS=(PUBLISH_TARGET=central PUBLISH_BRANCHES=dev IMAGE_BUILD=none IMAGE_NAMES=
     SYSTEM_PACKAGES= BREW_PACKAGES= HAS_CENTRAL_SECRETS=true BRANCH=dev ACTOR=octocat
-    PRUNE_PACKAGES=delete RESOLVE_FROM_GITHUB_PACKAGES=true)
+    PRUNE_PACKAGES=delete RESOLVE_FROM_GITHUB_PACKAGES=true IMAGE_MAVEN_PROFILES=)
 
 # Records its own name and arguments, one per line, and what --password-stdin reads. Fails
 # when its first argument is $STUB_FAIL.
@@ -182,6 +182,12 @@ echo "checking image-build and image-names come together"
 expect_plan_failure "image-names needs image-build spring-boot-goal or pom-bound" IMAGE_NAMES=my-app
 expect_plan_failure "image-build pom-bound needs image-names" IMAGE_BUILD=pom-bound
 
+echo "checking image-maven-profiles comes with a pom-bound image only"
+expect_plan true deploy true false IMAGE_BUILD=pom-bound IMAGE_NAMES=my-app IMAGE_MAVEN_PROFILES=container-image
+expect_plan_failure "image-maven-profiles needs image-build pom-bound" IMAGE_MAVEN_PROFILES=container-image
+expect_plan_failure "image-maven-profiles needs image-build pom-bound" IMAGE_BUILD=spring-boot-goal \
+    IMAGE_NAMES=my-app IMAGE_MAVEN_PROFILES=container-image
+
 echo "checking image and package names are checked, globs included"
 expect_plan true deploy true false IMAGE_BUILD=pom-bound IMAGE_NAMES="web-private web_2 web.public"
 expect_plan_failure "image name 'My-App'" IMAGE_BUILD=pom-bound IMAGE_NAMES="web My-App"
@@ -226,34 +232,58 @@ run_step brew-packages BREW_PACKAGES=$'tesseract\nleptonica'
 expect_calls brew install tesseract leptonica
 
 echo "checking the Maven run for a verify"
-run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=none
+run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=none PUSH_IMAGES=false \
+    IMAGE_MAVEN_PROFILES=
 expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true verify
 
 echo "checking profiles, the image goal and extra arguments reach the Maven run"
 run_step maven-build GOAL=deploy MAVEN_PROFILES=coverage,publish \
-    MAVEN_ARGUMENTS="-DskipTests  -Dspring-boot.build-image.skip=true" IMAGE_BUILD=spring-boot-goal
+    MAVEN_ARGUMENTS="-DskipTests  -Dspring-boot.build-image.skip=true" IMAGE_BUILD=spring-boot-goal \
+    PUSH_IMAGES=true IMAGE_MAVEN_PROFILES=
 expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true deploy -P coverage,publish \
     spring-boot:build-image-no-fork -DskipTests -Dspring-boot.build-image.skip=true
 
 echo "checking extra arguments split on newlines are all passed"
 run_step maven-build GOAL=verify MAVEN_PROFILES= \
-    MAVEN_ARGUMENTS=$'-DskipTests\n-Dspring-boot.build-image.skip=true' IMAGE_BUILD=none
+    MAVEN_ARGUMENTS=$'-DskipTests\n-Dspring-boot.build-image.skip=true' IMAGE_BUILD=none PUSH_IMAGES=false \
+    IMAGE_MAVEN_PROFILES=
 expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true verify \
     -DskipTests -Dspring-boot.build-image.skip=true
 
 echo "checking a pom-bound image adds nothing to the Maven run"
-run_step maven-build GOAL=deploy MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=pom-bound
+run_step maven-build GOAL=deploy MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=pom-bound PUSH_IMAGES=true \
+    IMAGE_MAVEN_PROFILES=
 expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true deploy
+
+echo "checking a run that pushes no image leaves the image goal out"
+run_step maven-build GOAL=verify MAVEN_PROFILES=coverage MAVEN_ARGUMENTS= IMAGE_BUILD=spring-boot-goal \
+    PUSH_IMAGES=false IMAGE_MAVEN_PROFILES=
+expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true verify -P coverage
+
+echo "checking image profiles join the Maven run only where it pushes the image"
+run_step maven-build GOAL=deploy MAVEN_PROFILES=coverage MAVEN_ARGUMENTS= IMAGE_BUILD=pom-bound \
+    PUSH_IMAGES=true IMAGE_MAVEN_PROFILES=container-image
+expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true deploy \
+    -P coverage,container-image
+run_step maven-build GOAL=deploy MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=pom-bound \
+    PUSH_IMAGES=true IMAGE_MAVEN_PROFILES=container-image
+expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true deploy \
+    -P container-image
+run_step maven-build GOAL=verify MAVEN_PROFILES=coverage MAVEN_ARGUMENTS= IMAGE_BUILD=pom-bound \
+    PUSH_IMAGES=false IMAGE_MAVEN_PROFILES=container-image
+expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true verify -P coverage
 
 echo "checking an argument is passed as written, never globbed"
 touch -- "$WORK/project/-Dpattern=a.txt"
-run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS="-Dpattern=*.txt" IMAGE_BUILD=none
+run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS="-Dpattern=*.txt" IMAGE_BUILD=none \
+    PUSH_IMAGES=false IMAGE_MAVEN_PROFILES=
 expect_calls mvn --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true verify "-Dpattern=*.txt"
 rm -- "$WORK/project/-Dpattern=a.txt"
 
 echo "checking the project's Maven wrapper is preferred"
 write_stub "$WORK/project/mvnw"
-run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=none
+run_step maven-build GOAL=verify MAVEN_PROFILES= MAVEN_ARGUMENTS= IMAGE_BUILD=none PUSH_IMAGES=false \
+    IMAGE_MAVEN_PROFILES=
 expect_calls mvnw --batch-mode --update-snapshots -Dmaven.install.skip=true -DdeployAtEnd=true verify
 rm "$WORK/project/mvnw"
 
