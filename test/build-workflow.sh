@@ -13,26 +13,12 @@ WORK="$(mktemp -d)"
 readonly WORK
 trap 'rm -rf "$WORK"' EXIT
 
+# shellcheck source=test/workflow-steps.sh
+source "$HERE/workflow-steps.sh"
+
 readonly PLAN_DEFAULTS=(PUBLISH_TARGET=central PUBLISH_BRANCHES=dev IMAGE_BUILD=none IMAGE_NAMES=
     SYSTEM_PACKAGES= BREW_PACKAGES= HAS_CENTRAL_SECRETS=true BRANCH=dev ACTOR=octocat
     PRUNE_PACKAGES=delete RESOLVE_FROM_GITHUB_PACKAGES=true)
-
-# Prints the `run: |` block of the step with the given id in the given workflow without its
-# indentation, which is the script the runner writes for that step.
-step_script() {
-    awk -v id="$2" '
-        in_run && $0 != "" && index($0, indent) != 1 { exit }
-        in_run { print substr($0, length(indent) + 1); next }
-        in_step && /^ *run: \|$/ {
-            match($0, /^ */)
-            indent = ""
-            for (i = 0; i < RLENGTH + 2; i++) indent = indent " "
-            in_run = 1
-            next
-        }
-        $0 ~ "^ *id: " id "$" { in_step = 1 }
-    ' "$1"
-}
 
 # Records its own name and arguments, one per line, and what --password-stdin reads. Fails
 # when its first argument is $STUB_FAIL.

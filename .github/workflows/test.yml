@@ -156,4 +156,5 @@ jobs:
             package-prune/test/run.sh \
             snapshot-version/branch-version.sh \
             snapshot-version/test/run.sh \
-            test/build-workflow.sh
+            test/build-workflow.sh \
+            test/workflow-steps.sh
