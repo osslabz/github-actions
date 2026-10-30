@@ -1,0 +1,170 @@
+name: dependabot-merge-on-build
+
+# Merges a Dependabot pull request once its build-on-push run went green. The caller runs on that
+# run's completion, so no runner waits for the build. README.md gives the caller and the reason
+# for each step.
+
+on:
+  workflow_call:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Read-only, and nothing third-party: decides whether the update merges before any job holds
+  # contents or pull-requests write.
+  check-update:
+    # A green push build of a Dependabot branch of this repository, pushed by Dependabot: a
+    # human's push to the branch leaves the merge to a human. A re-run keeps the actor.
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.actor.login == 'dependabot[bot]'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+      && startsWith(github.event.workflow_run.head_branch, 'dependabot/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      contents: read
+      pull-requests: read
+
+    outputs:
+      merge: ${{ steps.check.outputs.merge }}
+      pull-request: ${{ steps.check.outputs.pull-request }}
+
+    steps:
+      # An allow-list, per dependency, so a group merges only when every update in it would:
+      # Maven and npm patch and minor updates, which the build exercises, and every
+      # action update but a major of this repository's own workflows (build-on-push runs
+      # build.yml, never release.yml or this one, so a breaking one would still go green).
+      # Metadata that cannot be read never merges. Dependabot writes it into the commit message
+      # as YAML between `---` and `...`; the ecosystem is the branch's second segment. yq comes
+      # with the runner.
+      - name: check-update
+        id: check
+        env:
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Not merging is a decision, not a failure: the job ends green.
+          leave() {
+            echo "$1; left to a human"
+            echo "merge=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          pulls="$(gh api --method GET "repos/${GH_REPO}/pulls" -f state=open -f head="${OWNER}:${HEAD_BRANCH}")"
+          [ "$(jq length <<< "$pulls")" = 1 ] || leave "no single open pull request from ${HEAD_BRANCH}"
+          IFS=$'\t' read -r number author base head url \
+            <<< "$(jq -r '.[0] | [.number, .user.login, .base.ref, .head.sha, .html_url] | @tsv' <<< "$pulls")"
+          [ "$author" = 'dependabot[bot]' ] || leave "#${number} was opened by ${author}"
+          [ "$base" = dev ] || leave "#${number} targets ${base}"
+          # The newer head's own build decides; --match-head-commit would refuse this one anyway.
+          [ "$head" = "$HEAD_SHA" ] || leave "#${number} moved on to ${head}"
+
+          commits="$(gh api "repos/${GH_REPO}/pulls/${number}/commits")"
+          last="$(jq -r '.[-1].sha' <<< "$commits")"
+          [ "$last" = "$HEAD_SHA" ] || leave "#${number} moved on to ${last}"
+          jq -e 'all(.[]; .author.login == "dependabot[bot]" and .commit.verification.verified)' \
+            <<< "$commits" > /dev/null \
+            || leave "#${number} holds a commit that is not Dependabot's verified commit"
+
+          metadata="$(jq -r '.[-1].commit.message' <<< "$commits" \
+            | awk '/^---$/ && !seen { inside = 1; seen = 1; next } inside && /^\.\.\.$/ { exit } inside')"
+          [ -n "$metadata" ] || leave "#${number} carries no update metadata"
+          updates="$(yq -o=json '.["updated-dependencies"]' - <<< "$metadata" 2> /dev/null)" \
+            || leave "#${number} carries no update metadata"
+          jq -e 'type == "array" and length > 0' <<< "$updates" > /dev/null \
+            || leave "#${number} carries no update metadata"
+          echo "#${number}: $(jq -c 'map({(.["dependency-name"]): .["update-type"]}) | add' <<< "$updates")"
+
+          ecosystem="$(cut -d / -f 2 <<< "$HEAD_BRANCH")"
+          case "$ecosystem" in
+            maven | npm_and_yarn)
+              policy='.["update-type"] == "version-update:semver-patch" or .["update-type"] == "version-update:semver-minor"' ;;
+            github_actions)
+              policy='.["update-type"] != "version-update:semver-major" or (.["dependency-name"] | ascii_downcase | startswith("osslabz/github-actions") | not)' ;;
+            *)
+              leave "#${number} updates ${ecosystem}, which is not merged automatically" ;;
+          esac
+          jq -e "all(.[]; ${policy})" <<< "$updates" > /dev/null \
+            || leave "#${number} holds an update outside the ${ecosystem} policy"
+
+          echo "#${number} qualifies"
+          {
+            echo "merge=true"
+            echo "pull-request=${url}"
+          } >> "$GITHUB_OUTPUT"
+
+  merge:
+    needs: check-update
+    if: needs.check-update.outputs.merge == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Scoped to the pull request: a newer build's attempt replaces an older one rather than racing
+    # it. Job-level and left off build-merged-dev, so cancelling an attempt here never cancels the
+    # dispatch that follows one that already succeeded.
+    concurrency:
+      group: dependabot-merge-${{ github.event.workflow_run.head_branch }}
+      cancel-in-progress: true
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    outputs:
+      merged: ${{ steps.merge.outputs.merged }}
+
+    steps:
+      # The approval follows the green build, so a red pull request never shows as approved.
+      # --rebase keeps history linear and Dependabot's conventional subject, which squash would
+      # replace with the title. --match-head-commit refuses a head the build did not cover. A merge
+      # that lands a moment earlier moves dev under this one and GitHub refuses once with "Base
+      # branch was modified"; that refusal alone is retried.
+      - name: approve-and-merge
+        id: merge
+        env:
+          PR_URL: ${{ needs.check-update.outputs.pull-request }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr review --approve "$PR_URL"
+          for attempt in 1 2 3; do
+            if output="$(gh pr merge --rebase --match-head-commit "$HEAD_SHA" "$PR_URL" 2>&1)"; then
+              echo "$output"
+              echo "merged=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "$output"
+            if ! grep -qF 'Base branch was modified' <<< "$output" || [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+            sleep 10
+          done
+
+  # The merge pushed dev with GITHUB_TOKEN, which starts no push run. The rebased combination
+  # on dev was never built as such, so it is built and published here. A job of its own, so
+  # `actions: write` stays away from the jobs that read the pull request and merge it.
+  build-merged-dev:
+    needs: merge
+    if: needs.merge.outputs.merged == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      actions: write
+
+    steps:
+      - name: dispatch-build-on-push
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        # A block, so test/dependabot-merge-workflow.sh can read it like the other steps.
+        run: |
+          gh workflow run build-on-push.yml --ref dev

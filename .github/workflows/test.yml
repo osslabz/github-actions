@@ -43,6 +43,9 @@ jobs:
       - name: build-workflow-tests
         run: test/build-workflow.sh
 
+      - name: dependabot-merge-workflow-tests
+        run: test/dependabot-merge-workflow.sh
+
       # The script tests cover the derivation; the steps below run the action itself, as a
       # caller does. Maven cannot read the default branch's fixture, so rewriting it fails.
       - name: write-snapshot-version-fixtures
@@ -157,4 +160,5 @@ jobs:
             snapshot-version/branch-version.sh \
             snapshot-version/test/run.sh \
             test/build-workflow.sh \
+            test/dependabot-merge-workflow.sh \
             test/workflow-steps.sh

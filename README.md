@@ -14,7 +14,8 @@ another organisation, nor from a public repository at all.
 | [commit-subject-check](#commit-subject-check) | composite action | `build.yml`, or a project's own build |
 | [package-prune](#package-prune) | composite action | `build.yml`, or a one-off cleanup from a checkout |
 | [release.yml](#release) | reusable workflow | the project's `release.yml` |
-| [dependabot-auto-merge.yml](#dependabot-auto-merge) | reusable workflow | the project's `dependabot-auto-merge.yml` |
+| [dependabot-merge-on-build.yml](#dependabot-merge-on-build) | reusable workflow | the project's `dependabot-auto-merge.yml` |
+| [dependabot-auto-merge.yml](#dependabot-auto-merge) | reusable workflow | the project's `dependabot-auto-merge.yml`, before v1.7.0 |
 
 Callers use `@v1`, a tag that moves with the latest `v1.x` (see [Releasing](#releasing)).
 
@@ -26,9 +27,9 @@ fast-forwards to the latest release tag. It keeps four files:
 - `.github/workflows/build-on-push.yml`, `.github/workflows/release.yml` and
   `.github/workflows/dependabot-auto-merge.yml`, a few lines each, calling the reusable
   workflows. build-on-push runs on `push` to every branch but `main` and on
-  `workflow_dispatch`: the shared workflows find it by this file name, wait for it and
-  dispatch it. A project whose build `build.yml` does not cover keeps a build-on-push of its
-  own under that name and uses the composite actions directly.
+  `workflow_dispatch`: the shared workflows find it by this file name, and the merge workflow
+  by its `name:` `build-on-push`. A project whose build `build.yml` does not cover keeps a
+  build-on-push of its own under that name and uses the composite actions directly.
 - `.github/dependabot.yml`.
 
 The pom carries maven-release-plugin with
@@ -496,9 +497,63 @@ the dispatched commit, so after the first push it can only fail at the push agai
 | `create-github-release` | published, `main` moved | run the step's command by hand |
 | `build-next-snapshot` | released | dispatch `build-on-push` on `dev` by hand |
 
-## dependabot-auto-merge
+## dependabot-merge-on-build
 
 Merges a Dependabot pull request into `dev` once its `build-on-push` run is green. The caller:
+
+```yaml
+name: dependabot-auto-merge
+
+# Runs when a Dependabot branch's build-on-push run ends; the shared workflow merges the pull
+# request if that build went green. Only fires from the default branch's copy of this file.
+on:
+  workflow_run:
+    workflows:
+      - build-on-push
+    types:
+      - completed
+    branches:
+      - 'dependabot/**'
+
+jobs:
+  dependabot-auto-merge:
+    # Covers every job of the shared workflow; each job takes only what it needs.
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    uses: osslabz/github-actions/.github/workflows/dependabot-merge-on-build.yml@v1
+```
+
+`workflow_run` starts the workflow when the build ends, so no runner waits for it. GitHub runs
+a `workflow_run` workflow from the default branch only: the merge runs from `dev`'s copy of the
+caller, which a pull request cannot change, and fires only once it is on `dev`. The workflow
+uses `GITHUB_TOKEN` with the caller's `permissions` and no secrets.
+
+What merges, checked per dependency so a group merges only when every update in it would:
+Maven and npm patch and minor updates, and every GitHub Actions update except a major of this
+repository's own workflows, which waits for a human like a Maven major does. `build-on-push`
+runs `build.yml` but never `release.yml` or this workflow, so a breaking major would still go
+green. The list is positive: an update without readable metadata never merges, nor does any
+other ecosystem.
+
+| Job / step | Why |
+| --- | --- |
+| `check-update` | Read-only and runs nothing third-party, so the decision is made before any job holds `contents: write` or `pull-requests: write`. Finds the open pull request from the build's branch and leaves it unless Dependabot opened it into `dev`, its head and the last of its commits are still the commit the build covered, and every commit in it is Dependabot's and verified. A newer head waits for its own build. Reads the update metadata from the YAML block Dependabot writes into the commit message, since `fetch-metadata` needs a `pull_request` event. Leaving a pull request to a human ends green. |
+| job `if` | Only a green `push` build of a `dependabot/` branch of this repository that Dependabot pushed. A human's push to the branch leaves the merge to a human. A re-run keeps the actor. |
+| `merge` concurrency | Scoped to the head branch: a newer build's merge attempt replaces an older one instead of racing it. Job-level and left off `build-merged-dev`, so cancelling an attempt here never cancels the dispatch that follows one that already succeeded. |
+| approve | After the green build, so a red pull request never shows as approved. The repository must allow Actions to approve pull requests. |
+| merge | `--rebase` keeps history linear and Dependabot's conventional subject, which squash would replace with the title. `--match-head-commit` refuses a head the build did not cover. When another merge lands a moment earlier, GitHub refuses with "Base branch was modified"; that refusal alone is retried, three attempts ten seconds apart. |
+| `build-merged-dev` | Dispatches `build-on-push.yml` on `dev` after a merge. The merge rebased the pull request onto whatever `dev` had become, a combination nobody built, and pushed it with `GITHUB_TOKEN`, which starts no workflow. A job of its own, so `actions: write` stays away from the jobs that read and merge the pull request. |
+
+Re-running a red build re-runs the merge once the build turns green. A pull request whose
+build finished before its repository switched to this caller needs `@dependabot rebase` for a
+new build, or a merge by hand.
+
+## dependabot-auto-merge
+
+The `pull_request`-triggered predecessor, kept for callers that have not switched: its merge
+job holds a runner for the whole build. The caller:
 
 ```yaml
 name: dependabot-auto-merge
@@ -579,7 +634,9 @@ action's commit alone leaves that head red until the pin-bumping commit joins it
 `test.yml` runs on every push: the scripts' tests (`snapshot-version/test/run.sh`,
 `commit-subject-check/test/run.sh`, bash and git only; `package-prune/test/run.sh`, against a
 stub `gh`); `test/build-workflow.sh`, which runs `build.yml`'s shell steps against stubs for
-`mvn`, `docker` and `sudo` and checks its pinned actions; `snapshot-version` and
+`mvn`, `docker` and `sudo` and checks its pinned actions;
+`test/dependabot-merge-workflow.sh`, which runs `dependabot-merge-on-build.yml`'s shell steps
+against a stub `gh` and needs `yq`, which the runner provides; `snapshot-version` and
 `commit-subject-check` run the way a caller runs them; `commit-subject-check` on this repository's own pushes;
 actionlint over every workflow; and shellcheck over the scripts. Both linters are downloaded
 and checked against their published checksums.
