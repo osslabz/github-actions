@@ -61,8 +61,9 @@ on:
         default: ''
       prune-packages:
         description: >-
-          `off`, `dry-run` or `delete`: what dev's build does with the Maven versions on GitHub
-          Packages that no build asks for again. `dry-run` only logs them and never fails the build.
+          `off`, `dry-run` or `delete`: what dev's build does with the package versions on GitHub
+          Packages that no build asks for again: stale Maven snapshots and untagged images.
+          `dry-run` only logs them and never fails the build.
           `delete` needs packages-token to be a classic PAT with delete:packages.
         required: false
         type: string
@@ -328,7 +329,7 @@ jobs:
         id: prune-packages
         if: steps.plan.outputs.prune == 'true'
         continue-on-error: ${{ inputs.prune-packages == 'dry-run' }}
-        uses: osslabz/github-actions/package-prune@5570c2800c71e87d223daf0586b72237f0ec00f8
+        uses: osslabz/github-actions/package-prune@e845781c9c8b71e5566b68bcc9d7b737659061f1
         with:
           default-branch: dev
           current-version: ${{ steps.snapshot.outputs.version }}

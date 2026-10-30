@@ -218,20 +218,26 @@ starts. The replaced push's own commits are then never checked.
 
 ## package-prune
 
-Deletes the Maven versions a repository published to GitHub Packages once no build will ask for
-them again. GitHub bills Maven storage, and a snapshot version keeps every timestamped build
-pushed to it. Images on ghcr.io cost nothing and are left alone.
+Deletes the package versions a repository published to GitHub Packages once no build will ask
+for them again. GitHub bills their storage, and a Maven snapshot version keeps every timestamped
+build pushed to it.
 
 | Version | Deleted when |
 | --- | --- |
 | `1.3.0-feat-x-SNAPSHOT` | no live branch slugs to `feat-x` the way [snapshot-version](#snapshot-version) slugs a branch name |
 | `1.2.0-SNAPSHOT` | the package holds a release at or after `1.2.0` (`sort -V`) and it is not `current-version` |
 | `1.2.0`, `current-version`, any other shape | never |
+| an image version without a tag | it was created over 7 days ago and no tagged multi-arch index lists it |
+| a tagged image, or one a tagged index lists | never |
 
 A slug cannot be turned back into a branch name: `feat/x` and `feat-x` share one, so a live
 branch keeps every version its slug matches. When every version of a package is stale the
 package itself goes, since GitHub refuses to delete a package's last version; a version
 published in between goes with it, restorable for 30 days.
+
+The images a tagged multi-arch index lists come from the registry's manifest of each tagged
+version, read with a pull token from the same classic token. An image package without any tag
+is left alone.
 
 Nothing is deleted when the branch list lacks the default branch, or when more versions are
 stale than the cap of 50. Only this repository's packages are touched. Every decision
@@ -356,7 +362,7 @@ run on `dev` is never cancelled, so two deploys of one snapshot coordinate never
 | `image-build` | `none` | `spring-boot-goal`: in a run that pushes images, the Maven run adds `spring-boot:build-image-no-fork` after its lifecycle phase. `pom-bound`: the pom binds the image build itself; bind it in a profile named in `image-maven-profiles`, or it runs in every build. |
 | `image-names` | empty | The artifactIds whose images are pushed as `ghcr.io/<owner>/<artifactId>:<version>`. Required with an `image-build`. |
 | `image-maven-profiles` | empty | Profiles, comma-separated, that bind a pom-bound image build. Active only in runs that push the image. |
-| `prune-packages` | `delete` | What `dev`'s build does with the Maven versions on GitHub Packages that no build asks for again, see [package-prune](#package-prune). `delete` deletes them and needs `packages-token`, `dry-run` logs them, `off` skips the step. Only with `github-packages`. |
+| `prune-packages` | `delete` | What `dev`'s build does with the Maven versions and untagged images on GitHub Packages that no build asks for again, see [package-prune](#package-prune). `delete` deletes them and needs `packages-token`, `dry-run` logs them, `off` skips the step. Only with `github-packages`. |
 | `resolve-from-github-packages` | `true` | The build reads the owner's private packages from GitHub Packages, so Maven gets `packages-token` in every run. `false`: only in runs that publish. |
 | `timeout-minutes` | `30` | The job's time limit. |
 
@@ -396,7 +402,7 @@ The steps, and why each is there:
 | `set-snapshot-version` | [snapshot-version](#snapshot-version), after `setup-jdk`, whose cache key hashes the poms. |
 | `maven-build` | `deploy` in a run that publishes, `verify` otherwise, with the project's `./mvnw` where there is one. `install` is skipped: nothing reads the local repository afterwards, and the project's own artifacts would otherwise fill the Maven cache. `-DdeployAtEnd=true` holds every module's upload until the last module is built, so a multi-module build whose tests fail publishes nothing; Central's publishing plugin already waits on its own. The image is built only in a run that pushes it: building it elsewhere cost a minute or more per run, and a change that breaks the image first fails in a run that publishes. |
 | `push-images` | Only in runs that publish. Spring Boot names each image `<artifactId>:<version>`; this tags it for `ghcr.io` and pushes it with the job's token. |
-| `prune-packages` | Only on `dev` in a run that publishes to GitHub Packages, unless `prune-packages` is `off`. [package-prune](#package-prune) with `packages-token`, or the job's token, keeping the version this run published. Last, so it cannot hold a publish back. `delete` fails the build when the token is not a classic one, or lacks `delete:packages` while something is stale. A dry run never fails the build. |
+| `prune-packages` | Only on `dev` in a run that publishes to GitHub Packages, unless `prune-packages` is `off`. [package-prune](#package-prune) of Maven versions and untagged images, with `packages-token` or the job's token, keeping the version this run published. Last, so it cannot hold a publish back. `delete` fails the build when the token is not a classic one, or lacks `delete:packages` while something is stale. A dry run never fails the build. |
 
 ## release
 
@@ -633,9 +639,9 @@ action's commit alone leaves that head red until the pin-bumping commit joins it
 ## Tests
 
 `test.yml` runs on every push: the scripts' tests (`snapshot-version/test/run.sh`,
-`commit-subject-check/test/run.sh`, bash and git only; `package-prune/test/run.sh`, against a
-stub `gh`); `test/build-workflow.sh`, which runs `build.yml`'s shell steps against stubs for
-`mvn`, `docker` and `sudo` and checks its pinned actions;
+`commit-subject-check/test/run.sh`, bash and git only; `package-prune/test/run.sh`, against
+stubs of `gh` and `curl`); `test/build-workflow.sh`, which runs `build.yml`'s shell steps
+against stubs for `mvn`, `docker` and `sudo` and checks its pinned actions;
 `test/dependabot-merge-workflow.sh`, which runs `dependabot-merge-on-build.yml`'s shell steps
 against a stub `gh` and needs `yq`, which the runner provides; `snapshot-version` and
 `commit-subject-check` run the way a caller runs them; `commit-subject-check` on this repository's own pushes;
