@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Runs prune.sh against a stub gh that serves fixed API responses and records every call, so
-# its decisions are checked without a token and without a package to lose.
+# Runs prune.sh against a stub gh and a stub curl that serve fixed API and registry responses and
+# record every call, so its decisions are checked without a token and without a package to lose.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -13,16 +13,22 @@ readonly WORK
 readonly API="$WORK/api"
 readonly OUT="$WORK/out"
 readonly LIB="orgs/acme/packages/maven/net.acme.lib"
+readonly APP="orgs/acme/packages/container/app"
 trap 'rm -rf "$WORK"' EXIT
 
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 # Serves $STUB_API/<endpoint>.<page>; --paginate concatenates every page, as gh does.
+# `gh auth token` prints $STUB_API/stored-token, the token of a `gh auth login`.
 set -euo pipefail
 
+if [ "$*" = "auth token" ] && [ -f "$STUB_API/stored-token" ]; then
+    cat "$STUB_API/stored-token"
+    exit 0
+fi
 if [ "${1:-}" != api ]; then
-    echo "stub gh: only 'gh api' is served" >&2
+    echo "stub gh: only 'gh api' and a stored 'gh auth token' are served" >&2
     exit 1
 fi
 shift
@@ -60,6 +66,37 @@ fi
 if $paginate; then cat "$response".[0-9]*; else cat "$response.1"; fi
 STUB
 chmod +x "$WORK/bin/gh"
+
+cat > "$WORK/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+# Serves ghcr.io: a token request gets registry-token; a manifest request with that token gets
+# $STUB_API/manifests/<digest>, or a single-image manifest when there is none, and fails when
+# $STUB_API/manifests/<digest>.fail exists. Records GET <url>, and a token request's
+# credentials in $STUB_API/registry-user.
+set -euo pipefail
+url="${*: -1}"
+config="$(cat)"
+echo "GET $url" >> "$STUB_API/calls"
+case "$url" in
+    https://ghcr.io/token\?*)
+        grep -q '^user = "prune:' <<< "$config" || { echo "stub curl: no credentials" >&2; exit 22; }
+        grep '^user = ' <<< "$config" > "$STUB_API/registry-user"
+        echo '{"token":"registry-token"}'
+        ;;
+    https://ghcr.io/v2/*/manifests/*)
+        grep -qF 'Authorization: Bearer registry-token' <<< "$config" || { echo "stub curl: no token" >&2; exit 22; }
+        digest="${url##*/}"
+        if [ -f "$STUB_API/manifests/$digest.fail" ]; then exit 22; fi
+        if [ -f "$STUB_API/manifests/$digest" ]; then
+            cat "$STUB_API/manifests/$digest"
+        else
+            echo '{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","layers":[]}'
+        fi
+        ;;
+    *) echo "stub curl: unexpected $url" >&2; exit 1 ;;
+esac
+STUB
+chmod +x "$WORK/bin/curl"
 
 fail() {
     echo "FAILED: $1" >&2
@@ -111,19 +148,42 @@ branches() {
     serve "repos/acme/lib/branches" "$(branches_page "$@")"
 }
 
+# container_version <id> <digest> <days old> [<tag>...]: one version as GitHub lists it.
+container_version() {
+    jq -cn --argjson id "$1" --arg digest "$2" \
+        --arg created "$(date -u -d "$3 days ago" +%Y-%m-%dT%H:%M:%SZ)" \
+        '{id: $id, name: $digest, created_at: $created,
+          metadata: {package_type: "container", container: {tags: $ARGS.positional}}}' \
+        --args "${@:4}"
+}
+
+# image <version>...: repo lib publishes one container package, app, with these versions.
+image() {
+    serve "orgs/acme/packages?package_type=container" "$(packages_page lib app)"
+    serve "$APP/versions" "$(printf '%s\n' "$@" | jq -cs .)"
+}
+
+# index <digest> <child digest>...: the registry serves a multi-arch index at digest.
+index() {
+    mkdir -p "$API/manifests"
+    jq -cn '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json",
+             manifests: [$ARGS.positional[] | {digest: .}]}' --args "${@:2}" > "$API/manifests/$1"
+}
+
 new_case() {
     echo "checking $1"
     rm -rf "$API"
     mkdir -p "$API"
     touch "$API/calls"
     owner_is Organization "repo, delete:packages"
+    serve "orgs/acme/packages?package_type=container" '[]'
     summary=""
 }
 
 run_prune() {
     status=0
-    PATH="$WORK/bin:$PATH" STUB_API="$API" GITHUB_STEP_SUMMARY="$summary" "$SCRIPT" \
-        --owner acme --repository lib --default-branch dev \
+    PATH="$WORK/bin:$PATH" STUB_API="$API" GH_TOKEN=classic-pat GITHUB_STEP_SUMMARY="$summary" \
+        "$SCRIPT" --owner acme --repository lib --default-branch dev \
         --current-version 1.3.0-SNAPSHOT --mode delete "$@" > "$OUT" 2>&1 || status=$?
 }
 
@@ -428,6 +488,7 @@ expect_deletes "$LIB/versions/3"
 new_case "a user's packages are reached under /users/"
 owner_is User "repo, delete:packages"
 serve "users/acme/packages?package_type=maven" "$(packages_page lib net.acme.lib)"
+serve "users/acme/packages?package_type=container" '[]'
 serve "users/acme/packages/maven/net.acme.lib/versions" \
     "$(versions_page 1 1.2.0 1.3.0-SNAPSHOT 1.3.0-feat-gone-SNAPSHOT)"
 branches dev
@@ -531,5 +592,143 @@ expect_status 0
 deletes=()
 for i in $(seq 2 $((${#names[@]} + 1))); do deletes+=("$LIB/versions/$i"); done
 expect_deletes "${deletes[@]}"
+
+new_case "an untagged image older than 7 days goes"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:old 8)"
+run_prune
+expect_status 0
+expect_deletes "$APP/versions/2"
+expect_output "app sha256:old: delete, untagged, older than 7 days and in no tagged index"
+
+new_case "an untagged image younger than 7 days stays"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:recent 6)"
+run_prune
+expect_status 0
+expect_deletes
+expect_output "app sha256:recent: keep, created less than 7 days ago"
+
+new_case "a tagged image stays however old"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:ancient 400 0.0.1-SNAPSHOT)" \
+    "$(container_version 2 sha256:live 1 0.1.0-SNAPSHOT latest)"
+run_prune
+expect_status 0
+expect_deletes
+expect_output "app sha256:ancient: keep, tagged 0.0.1-SNAPSHOT"
+
+new_case "the platform images a tagged index lists stay"
+library 1.3.0-SNAPSHOT
+branches dev
+index sha256:multi sha256:amd64 sha256:arm64 sha256:attestation
+image "$(container_version 1 sha256:multi 30 1.0.0)" "$(container_version 2 sha256:amd64 30)" \
+    "$(container_version 3 sha256:arm64 30)" "$(container_version 4 sha256:attestation 30)" \
+    "$(container_version 5 sha256:orphan 30)"
+run_prune
+expect_status 0
+expect_deletes "$APP/versions/5"
+expect_output "app sha256:arm64: keep, a tagged index lists it"
+
+new_case "an untagged index protects nothing"
+library 1.3.0-SNAPSHOT
+branches dev
+index sha256:old-multi sha256:old-amd64
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:old-multi 30)" \
+    "$(container_version 3 sha256:old-amd64 30)"
+run_prune
+expect_status 0
+expect_deletes "$APP/versions/2" "$APP/versions/3"
+
+# A missing creation time must not shift the tag into its place, which would leave the version
+# untagged and of an age that compares as old.
+new_case "a version without a creation time deletes nothing"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" \
+    "$(container_version 2 sha256:undated 30 1.2.0 | jq -c 'del(.created_at)')"
+run_prune
+expect_failure
+expect_deletes
+expect_output "sha256:undated has no created_at"
+
+new_case "an image package without any tag is left alone"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:a 30)" "$(container_version 2 sha256:b 30)"
+run_prune
+expect_status 0
+expect_deletes
+expect_output "app: keep every version, none is tagged"
+
+# Without the index's children the prune cannot tell what a tagged image needs.
+new_case "a manifest that cannot be read deletes nothing"
+library 1.3.0-SNAPSHOT
+branches dev
+mkdir -p "$API/manifests"
+touch "$API/manifests/sha256:live.fail"
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:old 8)"
+run_prune
+expect_failure
+expect_deletes
+
+new_case "the registry is asked with a pull token for this image"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)"
+run_prune
+expect_status 0
+grep -qxF "GET https://ghcr.io/token?scope=repository:acme/app:pull&service=ghcr.io" "$API/calls" \
+    || fail "expected a pull token for acme/app"
+grep -qxF "GET https://ghcr.io/v2/acme/app/manifests/sha256:live" "$API/calls" \
+    || fail "expected the tagged manifest to be read"
+
+new_case "the registry is asked with the token gh uses"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)"
+run_prune
+expect_status 0
+grep -qxF 'user = "prune:classic-pat"' "$API/registry-user" || fail "expected GH_TOKEN as the credentials"
+echo stored-pat > "$API/stored-token"
+status=0
+env -u GH_TOKEN PATH="$WORK/bin:$PATH" STUB_API="$API" "$SCRIPT" --owner acme --repository lib \
+    --default-branch dev --current-version 1.3.0-SNAPSHOT --mode delete > "$OUT" 2>&1 || status=$?
+expect_status 0
+grep -qxF 'user = "prune:stored-pat"' "$API/registry-user" || fail "expected gh's stored token without GH_TOKEN"
+
+new_case "images of other repositories are left alone"
+library 1.3.0-SNAPSHOT
+branches dev
+serve "orgs/acme/packages?package_type=container" "$(packages_page other other-app)"
+run_prune
+expect_status 0
+expect_deletes
+if grep -q 'other-app' "$API/calls"; then fail "another repository's image was read"; fi
+
+new_case "stale images count toward the cap"
+library 1.3.0-SNAPSHOT
+branches dev
+mapfile -t stale < <(for i in $(seq 51); do container_version $((i + 1)) "sha256:old$i" 30; done)
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "${stale[@]}"
+run_prune
+expect_status 1
+expect_deletes
+expect_output "--max-deletions"
+
+new_case "a dry run lists the images it would delete, also in the summary"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:old 8)"
+summary="$WORK/summary"
+: > "$summary"
+run_prune --mode dry-run
+expect_status 0
+expect_deletes
+expect_output "dry run: would delete app sha256:old"
+grep -qF -- "- app sha256:old" "$summary" || fail "summary lacks the image"
 
 echo "all package-prune checks passed"

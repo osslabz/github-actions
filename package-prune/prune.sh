@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deletes the Maven package versions a repository published to GitHub Packages that no build
+# Deletes the package versions a repository published to GitHub Packages that no build
 # will ask for again. GitHub bills Maven storage and never expires a snapshot, and each
 # snapshot version holds every timestamped build pushed to it.
 #
@@ -10,10 +10,14 @@
 # a whole package also removes a version published between listing and deleting; GitHub keeps
 # it restorable for 30 days.
 #
+# An image (container package) keeps every tagged version and every digest a tagged multi-arch
+# index lists; an untagged version older than seven days goes. A package without any tag is left
+# alone.
+#
 # Usage: prune.sh --owner <owner> --repository <repo> --default-branch <branch>
 #                 --current-version <version> --mode dry-run|delete [--max-deletions <n>]
-# The token comes from GH_TOKEN, as for any gh call. It must be a classic PAT, the only kind
-# GitHub lists Maven packages to; delete mode refuses any other, and refuses one without
+# The token is the one gh uses: GH_TOKEN, or gh's own login. It must be a classic PAT, the only
+# kind GitHub lists Maven packages to; delete mode refuses any other, and refuses one without
 # delete:packages once something is stale. A dry run with any other token warns and passes.
 set -euo pipefail
 
@@ -22,6 +26,8 @@ readonly USAGE="Usage: prune.sh --owner <owner> --repository <repo> --default-br
 readonly RELEASE='^[0-9]+\.[0-9]+\.[0-9]+$'
 readonly DEV_SNAPSHOT='^([0-9]+\.[0-9]+\.[0-9]+)-SNAPSHOT$'
 readonly BRANCH_SNAPSHOT='^[0-9]+\.[0-9]+\.[0-9]+-([A-Za-z0-9]+(-[A-Za-z0-9]+)*)-SNAPSHOT$'
+readonly UNTAGGED_DAYS=7
+readonly MANIFEST_TYPES='application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'
 
 owner="" repository="" default_branch="" current_version="" mode="" max_deletions=50
 while [ $# -gt 0 ]; do
@@ -91,6 +97,21 @@ verdict() {
     fi
 }
 
+# registry_token <image>: a ghcr.io pull token for one of the owner's images, asked for with the
+# token gh uses. Credentials go through curl's config on stdin, never the command line.
+registry_token() {
+    curl -fsS -K - "https://ghcr.io/token?scope=repository:${owner,,}/$1:pull&service=ghcr.io" \
+        <<< "user = \"prune:${GH_TOKEN:-$(gh auth token)}\"" | jq -r .token
+}
+
+# index_children <image> <registry token> <digest>: the digests a multi-arch index lists, which
+# are untagged versions of the same package; nothing for a single image.
+index_children() {
+    curl -fsS -K - "https://ghcr.io/v2/${owner,,}/$1/manifests/$3" \
+        <<< "header = \"Authorization: Bearer $2\"
+header = \"Accept: $MANIFEST_TYPES\"" | jq -r '.manifests[]?.digest'
+}
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
@@ -136,8 +157,8 @@ if ! grep -qxF -- "$default_branch" <<< "$branches"; then
 fi
 live_slugs="$(while IFS= read -r branch; do slug_of "$branch"; done <<< "$branches")"
 
-# One line per DELETE: package, version and its id, or no id when every version is stale and
-# the package goes whole, because GitHub refuses to delete a package's last version.
+# One line per DELETE: what to call it in the log, and its endpoint. A package whose every
+# version is stale goes whole, because GitHub refuses to delete a package's last version.
 : > "$work/deletes"
 stale_count=0
 while IFS= read -r package; do
@@ -152,24 +173,64 @@ while IFS= read -r package; do
         decision="$(verdict "$version" "$releases")"
         echo "$package $version: $decision"
         if [[ "$decision" == delete,* ]]; then
-            printf '%s\t%s\t%s\n' "$package" "$version" "$id" >> "$work/package-deletes"
+            printf '%s %s\t%s\n' "$package" "$version" "$packages_path/maven/$package/versions/$id" >> "$work/package-deletes"
         fi
     done < "$work/package-versions"
     package_stale="$(wc -l < "$work/package-deletes")"
     stale_count=$((stale_count + package_stale))
     if [ "$package_stale" -gt 0 ] && [ "$package_stale" -eq "$version_count" ]; then
-        printf '%s\t(every version)\t\n' "$package" >> "$work/deletes"
+        printf '%s (every version)\t%s\n' "$package" "$packages_path/maven/$package" >> "$work/deletes"
     else
         cat "$work/package-deletes" >> "$work/deletes"
     fi
 done <<< "$packages"
+
+containers="$(gh api --paginate "$packages_path?package_type=container" \
+    | jq -r --arg repo "$repository" '.[] | select(.repository.name == $repo) | .name')"
+cutoff="$(date -u -d "$UNTAGGED_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)"
+while IFS= read -r image; do
+    [ -n "$image" ] || continue
+    # One line per version: id, digest, creation time, tags (comma-separated, empty if untagged).
+    # Tab is whitespace to read, so an empty creation time would shift the tags into its place.
+    gh api --paginate "$packages_path/container/$image/versions" \
+        | jq -r '.[] | [(.id | tostring), .name, (.created_at // error("\(.name) has no created_at")),
+            (.metadata.container.tags | join(","))] | @tsv' \
+        > "$work/image-versions"
+    if ! awk -F '\t' '$4 != "" { found = 1 } END { exit !found }' "$work/image-versions"; then
+        echo "$image: keep every version, none is tagged"
+        continue
+    fi
+    token="$(registry_token "$image")"
+    : > "$work/referenced"
+    while IFS=$'\t' read -r _ digest _ tags; do
+        if [ -n "$tags" ]; then
+            index_children "$image" "$token" "$digest" >> "$work/referenced"
+        fi
+    done < "$work/image-versions"
+    while IFS=$'\t' read -r id digest created tags; do
+        if [ -n "$tags" ]; then
+            decision="keep, tagged $tags"
+        elif grep -qxF -- "$digest" "$work/referenced"; then
+            decision="keep, a tagged index lists it"
+        elif [[ "$created" > "$cutoff" ]]; then
+            decision="keep, created less than $UNTAGGED_DAYS days ago"
+        else
+            decision="delete, untagged, older than $UNTAGGED_DAYS days and in no tagged index"
+        fi
+        echo "$image $digest: $decision"
+        if [[ "$decision" == delete,* ]]; then
+            printf '%s %s\t%s\n' "$image" "$digest" "$packages_path/container/$image/versions/$id" >> "$work/deletes"
+            stale_count=$((stale_count + 1))
+        fi
+    done < "$work/image-versions"
+done <<< "$containers"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     {
         echo "### package-prune ($mode)"
         echo
         if [ -s "$work/deletes" ]; then
-            awk -F '\t' '{ print "- " $1 " " $2 }' "$work/deletes"
+            awk -F '\t' '{ print "- " $1 }' "$work/deletes"
         else
             echo "Nothing to prune."
         fi
@@ -197,26 +258,21 @@ if [ "$mode" = delete ] && ! tr ',' '\n' <<< "$scopes" | tr -d ' ' | grep -qxF d
     exit 1
 fi
 
-while IFS=$'\t' read -r package version id; do
-    if [ -n "$id" ]; then
-        endpoint="$packages_path/maven/$package/versions/$id"
-    else
-        endpoint="$packages_path/maven/$package"
-    fi
+while IFS=$'\t' read -r label endpoint; do
     if [ "$mode" = dry-run ]; then
-        echo "dry run: would delete $package $version"
+        echo "dry run: would delete $label"
         continue
     fi
     if ! gh api -X DELETE "$endpoint" > /dev/null 2> "$work/error"; then
         error="$(cat "$work/error")"
         if [[ "$error" =~ \(HTTP\ 403\) ]]; then
-            echo "::error::deleting $package $version was refused ($error). The token needs the delete:packages scope: set the packages-token secret to a classic PAT that has it."
+            echo "::error::deleting $label was refused ($error). The token needs the delete:packages scope: set the packages-token secret to a classic PAT that has it."
         elif [[ "$error" =~ \(HTTP\ 404\) ]]; then
-            echo "::error::deleting $package $version was refused or already gone ($error). If it still exists, the token needs the delete:packages scope: set the packages-token secret to a classic PAT that has it."
+            echo "::error::deleting $label was refused or already gone ($error). If it still exists, the token needs the delete:packages scope: set the packages-token secret to a classic PAT that has it."
         else
-            echo "::error::deleting $package $version failed: $error"
+            echo "::error::deleting $label failed: $error"
         fi
         exit 1
     fi
-    echo "deleted $package $version"
+    echo "deleted $label"
 done < "$work/deletes"
