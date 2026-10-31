@@ -227,7 +227,7 @@ build pushed to it.
 | `1.3.0-feat-x-SNAPSHOT` | no live branch slugs to `feat-x` the way [snapshot-version](#snapshot-version) slugs a branch name |
 | `1.2.0-SNAPSHOT` | the package holds a release at or after `1.2.0` (`sort -V`) and it is not `current-version` |
 | `1.2.0`, `current-version`, any other shape | never |
-| an image version without a tag | it was created over 7 days ago and no tagged multi-arch index lists it |
+| an image version without a tag | it was created over 7 days ago, no tagged multi-arch index lists it, and a newer such version exists |
 | a tagged image, or one a tagged index lists | never |
 
 A slug cannot be turned back into a branch name: `feat/x` and `feat-x` share one, so a live
@@ -236,8 +236,9 @@ package itself goes, since GitHub refuses to delete a package's last version; a 
 published in between goes with it, restorable for 30 days.
 
 The images a tagged multi-arch index lists come from the registry's manifest of each tagged
-version, read with a pull token from the same classic token. An image package without any tag
-is left alone.
+version, read with a pull token from the same classic token. The newest untagged version that
+would otherwise go stays, so the image a build moved a tag away from can still be rolled back
+to. An image package without any tag is left alone.
 
 Nothing is deleted when the branch list lacks the default branch, or when more versions are
 stale than the cap of 50. Only this repository's packages are touched. Every decision

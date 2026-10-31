@@ -596,11 +596,26 @@ expect_deletes "${deletes[@]}"
 new_case "an untagged image older than 7 days goes"
 library 1.3.0-SNAPSHOT
 branches dev
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:old 8)"
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:previous 8)" \
+    "$(container_version 3 sha256:old 9)"
 run_prune
 expect_status 0
-expect_deletes "$APP/versions/2"
+expect_deletes "$APP/versions/3"
 expect_output "app sha256:old: delete, untagged, older than 7 days and in no tagged index"
+
+# A dev build moves its tag to a new digest, and the prune at the end of that run would otherwise
+# delete the digest the tag left, leaving nothing to roll back to.
+new_case "the newest untagged image that would go stays for rollback"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 0 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:oldest 20)" \
+    "$(container_version 3 sha256:previous 8)" "$(container_version 4 sha256:recent 3)" \
+    "$(container_version 5 sha256:older 12)"
+run_prune
+expect_status 0
+expect_deletes "$APP/versions/5" "$APP/versions/2"
+expect_output "app sha256:previous: keep, newest untagged"
+expect_output "app sha256:recent: keep, created less than 7 days ago"
 
 new_case "an untagged image younger than 7 days stays"
 library 1.3.0-SNAPSHOT
@@ -627,18 +642,19 @@ branches dev
 index sha256:multi sha256:amd64 sha256:arm64 sha256:attestation
 image "$(container_version 1 sha256:multi 30 1.0.0)" "$(container_version 2 sha256:amd64 30)" \
     "$(container_version 3 sha256:arm64 30)" "$(container_version 4 sha256:attestation 30)" \
-    "$(container_version 5 sha256:orphan 30)"
+    "$(container_version 5 sha256:orphan 30)" "$(container_version 6 sha256:previous 29)"
 run_prune
 expect_status 0
 expect_deletes "$APP/versions/5"
 expect_output "app sha256:arm64: keep, a tagged index lists it"
+expect_output "app sha256:previous: keep, newest untagged"
 
 new_case "an untagged index protects nothing"
 library 1.3.0-SNAPSHOT
 branches dev
 index sha256:old-multi sha256:old-amd64
 image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:old-multi 30)" \
-    "$(container_version 3 sha256:old-amd64 30)"
+    "$(container_version 3 sha256:old-amd64 31)" "$(container_version 4 sha256:previous 8)"
 run_prune
 expect_status 0
 expect_deletes "$APP/versions/2" "$APP/versions/3"
@@ -712,17 +728,29 @@ if grep -q 'other-app' "$API/calls"; then fail "another repository's image was r
 new_case "stale images count toward the cap"
 library 1.3.0-SNAPSHOT
 branches dev
-mapfile -t stale < <(for i in $(seq 51); do container_version $((i + 1)) "sha256:old$i" 30; done)
+mapfile -t stale < <(for i in $(seq 52); do container_version $((i + 1)) "sha256:old$i" $((30 + i)); done)
 image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "${stale[@]}"
 run_prune
 expect_status 1
 expect_deletes
 expect_output "--max-deletions"
 
+new_case "the image kept for rollback does not count toward the cap"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "${stale[@]:0:51}"
+run_prune
+expect_status 0
+deletes=()
+for i in $(seq 3 52); do deletes+=("$APP/versions/$i"); done
+expect_deletes "${deletes[@]}"
+expect_output "app sha256:old1: keep, newest untagged"
+
 new_case "a dry run lists the images it would delete, also in the summary"
 library 1.3.0-SNAPSHOT
 branches dev
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:old 8)"
+image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:previous 8)" \
+    "$(container_version 3 sha256:old 9)"
 summary="$WORK/summary"
 : > "$summary"
 run_prune --mode dry-run
@@ -730,5 +758,7 @@ expect_status 0
 expect_deletes
 expect_output "dry run: would delete app sha256:old"
 grep -qF -- "- app sha256:old" "$summary" || fail "summary lacks the image"
+if grep -qF "sha256:previous" "$summary"; then fail "summary lists the image kept for rollback"; fi
+if grep -qF "would delete app sha256:previous" "$OUT"; then fail "the image kept for rollback would be deleted"; fi
 
 echo "all package-prune checks passed"

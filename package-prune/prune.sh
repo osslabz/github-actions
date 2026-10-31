@@ -11,8 +11,8 @@
 # it restorable for 30 days.
 #
 # An image (container package) keeps every tagged version and every digest a tagged multi-arch
-# index lists; an untagged version older than seven days goes. A package without any tag is left
-# alone.
+# index lists; an untagged version older than seven days goes, except the newest such one, kept
+# to roll back to. A package without any tag is left alone.
 #
 # Usage: prune.sh --owner <owner> --repository <repo> --default-branch <branch>
 #                 --current-version <version> --mode dry-run|delete [--max-deletions <n>]
@@ -190,12 +190,13 @@ containers="$(gh api --paginate "$packages_path?package_type=container" \
 cutoff="$(date -u -d "$UNTAGGED_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)"
 while IFS= read -r image; do
     [ -n "$image" ] || continue
-    # One line per version: id, digest, creation time, tags (comma-separated, empty if untagged).
-    # Tab is whitespace to read, so an empty creation time would shift the tags into its place.
+    # One line per version, newest first: id, digest, creation time, tags (comma-separated, empty
+    # if untagged). Tab is whitespace to read, so an empty creation time would shift the tags into
+    # its place.
     gh api --paginate "$packages_path/container/$image/versions" \
         | jq -r '.[] | [(.id | tostring), .name, (.created_at // error("\(.name) has no created_at")),
             (.metadata.container.tags | join(","))] | @tsv' \
-        > "$work/image-versions"
+        | sort -t $'\t' -k3,3r > "$work/image-versions"
     if ! awk -F '\t' '$4 != "" { found = 1 } END { exit !found }' "$work/image-versions"; then
         echo "$image: keep every version, none is tagged"
         continue
@@ -207,6 +208,7 @@ while IFS= read -r image; do
             index_children "$image" "$token" "$digest" >> "$work/referenced"
         fi
     done < "$work/image-versions"
+    rollback_kept=false
     while IFS=$'\t' read -r id digest created tags; do
         if [ -n "$tags" ]; then
             decision="keep, tagged $tags"
@@ -214,6 +216,9 @@ while IFS= read -r image; do
             decision="keep, a tagged index lists it"
         elif [[ "$created" > "$cutoff" ]]; then
             decision="keep, created less than $UNTAGGED_DAYS days ago"
+        elif ! $rollback_kept; then
+            decision="keep, newest untagged"
+            rollback_kept=true
         else
             decision="delete, untagged, older than $UNTAGGED_DAYS days and in no tagged index"
         fi
