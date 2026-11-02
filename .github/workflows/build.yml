@@ -373,7 +373,7 @@ jobs:
         id: prune-packages
         if: steps.plan.outputs.prune == 'true'
         continue-on-error: ${{ inputs.prune-packages == 'dry-run' }}
-        uses: osslabz/github-actions/package-prune@7be63e22d95ffba75e01ac6b11de6ef65cdda620
+        uses: osslabz/github-actions/package-prune@8a0975baa23eaf622d237e3483983b9d8f276b9b
         with:
           default-branch: dev
           current-version: ${{ steps.snapshot.outputs.version }}
