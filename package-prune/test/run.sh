@@ -596,19 +596,19 @@ expect_deletes "${deletes[@]}"
 new_case "an untagged image older than 7 days goes"
 library 1.3.0-SNAPSHOT
 branches dev
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:previous 8)" \
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" "$(container_version 2 sha256:previous 8)" \
     "$(container_version 3 sha256:old 9)"
 run_prune
 expect_status 0
 expect_deletes "$APP/versions/3"
-expect_output "app sha256:old: delete, untagged, older than 7 days and in no tagged index"
+expect_output "app sha256:old: delete, untagged, older than 7 days and in no kept index"
 
 # A dev build moves its tag to a new digest, and the prune at the end of that run would otherwise
 # delete the digest the tag left, leaving nothing to roll back to.
 new_case "the newest untagged image that would go stays for rollback"
 library 1.3.0-SNAPSHOT
 branches dev
-image "$(container_version 1 sha256:live 0 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:oldest 20)" \
+image "$(container_version 1 sha256:live 0 1.3.0-SNAPSHOT)" "$(container_version 2 sha256:oldest 20)" \
     "$(container_version 3 sha256:previous 8)" "$(container_version 4 sha256:recent 3)" \
     "$(container_version 5 sha256:older 12)"
 run_prune
@@ -620,23 +620,24 @@ expect_output "app sha256:recent: keep, created less than 7 days ago"
 new_case "an untagged image younger than 7 days stays"
 library 1.3.0-SNAPSHOT
 branches dev
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:recent 6)"
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" "$(container_version 2 sha256:recent 6)"
 run_prune
 expect_status 0
 expect_deletes
 expect_output "app sha256:recent: keep, created less than 7 days ago"
 
-new_case "a tagged image stays however old"
+new_case "a release image stays however old"
 library 1.3.0-SNAPSHOT
 branches dev
-image "$(container_version 1 sha256:ancient 400 0.0.1-SNAPSHOT)" \
-    "$(container_version 2 sha256:live 1 0.1.0-SNAPSHOT latest)"
+image "$(container_version 1 sha256:ancient 400 1.0.0)" \
+    "$(container_version 2 sha256:live 1 1.3.0-SNAPSHOT latest)"
 run_prune
 expect_status 0
 expect_deletes
-expect_output "app sha256:ancient: keep, tagged 0.0.1-SNAPSHOT"
+expect_output "app sha256:ancient: keep, tagged 1.0.0 (a release)"
+expect_output "app sha256:live: keep, tagged 1.3.0-SNAPSHOT (the current version), latest (unrecognised version)"
 
-new_case "the platform images a tagged index lists stay"
+new_case "the platform images a kept index lists stay"
 library 1.3.0-SNAPSHOT
 branches dev
 index sha256:multi sha256:amd64 sha256:arm64 sha256:attestation
@@ -646,25 +647,196 @@ image "$(container_version 1 sha256:multi 30 1.0.0)" "$(container_version 2 sha2
 run_prune
 expect_status 0
 expect_deletes "$APP/versions/5"
-expect_output "app sha256:arm64: keep, a tagged index lists it"
+expect_output "app sha256:arm64: keep, a kept index lists it"
 expect_output "app sha256:previous: keep, newest untagged"
 
 new_case "an untagged index protects nothing"
 library 1.3.0-SNAPSHOT
 branches dev
 index sha256:old-multi sha256:old-amd64
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:old-multi 30)" \
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" "$(container_version 2 sha256:old-multi 30)" \
     "$(container_version 3 sha256:old-amd64 31)" "$(container_version 4 sha256:previous 8)"
 run_prune
 expect_status 0
 expect_deletes "$APP/versions/2" "$APP/versions/3"
+
+# A stale tag goes however young its version; it does not take the place kept for rollback.
+new_case "an image tagged only for a gone branch goes"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" \
+    "$(container_version 2 sha256:gone 2 1.3.0-feat-gone-SNAPSHOT)" \
+    "$(container_version 3 sha256:previous 20)" "$(container_version 4 sha256:old 25)"
+run_prune
+expect_status 0
+expect_deletes "$APP/versions/2" "$APP/versions/4"
+expect_output "app sha256:gone: delete, every tag stale: 1.3.0-feat-gone-SNAPSHOT (no live branch slugs to feat-gone)"
+expect_output "app sha256:previous: keep, newest untagged"
+
+# The age rule for plain snapshots does not reach branch tags.
+new_case "an image tagged for a live branch stays"
+library 1.3.0-SNAPSHOT
+branches dev feat/live
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" \
+    "$(container_version 2 sha256:branch 30 0.1.0-feat-live-SNAPSHOT)"
+run_prune
+expect_status 0
+expect_deletes
+expect_output "app sha256:branch: keep, tagged 0.1.0-feat-live-SNAPSHOT (a live branch slugs to feat-live)"
+
+# A snapshot after the current version isolates the release rule from the age rule.
+new_case "an image of a plain snapshot goes once the image has a release at or after it"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" "$(container_version 2 sha256:release 2 2.0.0)" \
+    "$(container_version 3 sha256:snapshot 3 1.5.0-SNAPSHOT)"
+run_prune
+expect_status 0
+expect_deletes "$APP/versions/3"
+expect_output "app sha256:snapshot: delete, every tag stale: 1.5.0-SNAPSHOT (released at or after 1.5.0)"
+expect_output "app sha256:release: keep, tagged 2.0.0 (a release)"
+
+new_case "a Maven release does not make an image's snapshot stale"
+library 2.0.0 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" \
+    "$(container_version 2 sha256:snapshot 3 1.5.0-SNAPSHOT)"
+run_prune
+expect_status 0
+expect_deletes
+expect_output "app sha256:snapshot: keep, tagged 1.5.0-SNAPSHOT (not released yet)"
+
+# No build pulls an old dev image, and a project that never releases would keep every one.
+new_case "an image of a plain snapshot before the current version goes"
+library 1.10.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 1.10.0-SNAPSHOT)" \
+    "$(container_version 2 sha256:older 3 1.9.0-SNAPSHOT)" \
+    "$(container_version 3 sha256:newer 4 1.11.0-SNAPSHOT)" \
+    "$(container_version 4 sha256:oldest 5 0.0.9-SNAPSHOT)"
+run_prune --current-version 1.10.0-SNAPSHOT
+expect_status 0
+expect_deletes "$APP/versions/2" "$APP/versions/4"
+expect_output "app sha256:older: delete, every tag stale: 1.9.0-SNAPSHOT (older than the current version)"
+expect_output "app sha256:newer: keep, tagged 1.11.0-SNAPSHOT (not released yet)"
+expect_output "app sha256:live: keep, tagged 1.10.0-SNAPSHOT (the current version)"
+
+new_case "a Maven plain snapshot before the current version stays"
+library 1.2.0-SNAPSHOT 1.3.0-SNAPSHOT
+branches dev
+run_prune
+expect_status 0
+expect_deletes
+expect_output "net.acme.lib 1.2.0-SNAPSHOT: keep, not released yet"
+
+new_case "an image with one stale tag and one tag to keep stays"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 1.3.0-feat-gone-SNAPSHOT 1.3.0-SNAPSHOT)"
+run_prune
+expect_status 0
+expect_deletes
+expect_output "app sha256:live: keep, tagged 1.3.0-SNAPSHOT (the current version); stale: 1.3.0-feat-gone-SNAPSHOT (no live branch slugs to feat-gone)"
+
+# The same platform image may also carry a tag of its own, from an earlier push of the same content.
+new_case "a platform image a kept index lists stays whatever its own tags"
+library 1.3.0-SNAPSHOT
+branches dev
+index sha256:live sha256:amd64
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" \
+    "$(container_version 2 sha256:amd64 20 1.2.0-SNAPSHOT)"
+run_prune
+expect_status 0
+expect_deletes
+expect_output "app sha256:amd64: keep, a kept index lists it"
+
+new_case "a lowercase snapshot tag is of no known shape and stays"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" \
+    "$(container_version 2 sha256:lower 20 1.2.0-snapshot)"
+run_prune
+expect_status 0
+expect_deletes
+expect_output "app sha256:lower: keep, tagged 1.2.0-snapshot (unrecognised version)"
+
+new_case "an index whose every tag is stale protects nothing"
+library 1.3.0-SNAPSHOT
+branches dev
+index sha256:live sha256:live-amd64
+index sha256:stale-multi sha256:stale-amd64 sha256:stale-arm64
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" "$(container_version 2 sha256:live-amd64 1)" \
+    "$(container_version 3 sha256:previous 8)" \
+    "$(container_version 4 sha256:stale-multi 30 1.3.0-feat-gone-SNAPSHOT)" \
+    "$(container_version 5 sha256:stale-amd64 31)" "$(container_version 6 sha256:stale-arm64 32)"
+run_prune
+expect_status 0
+expect_deletes "$APP/versions/4" "$APP/versions/5" "$APP/versions/6"
+expect_output "app sha256:live-amd64: keep, a kept index lists it"
+expect_output "app sha256:stale-arm64: delete, untagged, older than 7 days and in no kept index"
+
+# GitHub refuses to delete an image's last tagged version, and an image left untagged would never
+# be pruned again.
+new_case "the newest tagged image stays when every tag is stale, with what its index lists"
+library 1.3.0-SNAPSHOT
+branches dev
+index sha256:gone sha256:gone-amd64
+image "$(container_version 1 sha256:gone 1 1.3.0-feat-gone-SNAPSHOT)" \
+    "$(container_version 2 sha256:previous 15)" "$(container_version 3 sha256:gone-amd64 20)" \
+    "$(container_version 4 sha256:old 30 1.2.0-SNAPSHOT)"
+run_prune
+expect_status 0
+expect_deletes "$APP/versions/4"
+expect_output "app sha256:gone: keep, newest tagged, every tag stale: 1.3.0-feat-gone-SNAPSHOT (no live branch slugs to feat-gone)"
+expect_output "app sha256:gone-amd64: keep, a kept index lists it"
+expect_output "app sha256:previous: keep, newest untagged"
+
+new_case "an image without untagged versions keeps its newest tagged one when every tag is stale"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:gone 1 1.3.0-feat-gone-SNAPSHOT)" \
+    "$(container_version 2 sha256:old 30 1.2.0-SNAPSHOT)"
+run_prune
+expect_status 0
+expect_deletes "$APP/versions/2"
+expect_output "app sha256:gone: keep, newest tagged, every tag stale"
+
+new_case "stale image tags count toward the cap"
+library 1.3.0-SNAPSHOT
+branches dev
+mapfile -t stale_tagged < <(for i in $(seq 51); do
+    container_version $((i + 1)) "sha256:b$i" $((i + 1)) "1.3.0-b$i-SNAPSHOT"
+done)
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" "${stale_tagged[@]}"
+run_prune
+expect_status 1
+expect_deletes
+expect_output "--max-deletions"
+run_prune --max-deletions 51
+expect_status 0
+deletes=()
+for i in $(seq 2 52); do deletes+=("$APP/versions/$i"); done
+expect_deletes "${deletes[@]}"
+
+new_case "a dry run lists the stale-tagged images it would delete, also in the summary"
+library 1.3.0-SNAPSHOT
+branches dev
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" \
+    "$(container_version 2 sha256:gone 2 1.3.0-feat-gone-SNAPSHOT)"
+summary="$WORK/summary"
+: > "$summary"
+run_prune --mode dry-run
+expect_status 0
+expect_deletes
+expect_output "dry run: would delete app sha256:gone"
+grep -qF -- "- app sha256:gone" "$summary" || fail "summary lacks the stale-tagged image"
 
 # A missing creation time must not shift the tag into its place, which would leave the version
 # untagged and of an age that compares as old.
 new_case "a version without a creation time deletes nothing"
 library 1.3.0-SNAPSHOT
 branches dev
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" \
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" \
     "$(container_version 2 sha256:undated 30 1.2.0 | jq -c 'del(.created_at)')"
 run_prune
 expect_failure
@@ -686,7 +858,7 @@ library 1.3.0-SNAPSHOT
 branches dev
 mkdir -p "$API/manifests"
 touch "$API/manifests/sha256:live.fail"
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:old 8)"
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" "$(container_version 2 sha256:old 8)"
 run_prune
 expect_failure
 expect_deletes
@@ -694,7 +866,7 @@ expect_deletes
 new_case "the registry is asked with a pull token for this image"
 library 1.3.0-SNAPSHOT
 branches dev
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)"
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)"
 run_prune
 expect_status 0
 grep -qxF "GET https://ghcr.io/token?scope=repository:acme/app:pull&service=ghcr.io" "$API/calls" \
@@ -705,7 +877,7 @@ grep -qxF "GET https://ghcr.io/v2/acme/app/manifests/sha256:live" "$API/calls" \
 new_case "the registry is asked with the token gh uses"
 library 1.3.0-SNAPSHOT
 branches dev
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)"
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)"
 run_prune
 expect_status 0
 grep -qxF 'user = "prune:classic-pat"' "$API/registry-user" || fail "expected GH_TOKEN as the credentials"
@@ -729,7 +901,7 @@ new_case "stale images count toward the cap"
 library 1.3.0-SNAPSHOT
 branches dev
 mapfile -t stale < <(for i in $(seq 52); do container_version $((i + 1)) "sha256:old$i" $((30 + i)); done)
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "${stale[@]}"
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" "${stale[@]}"
 run_prune
 expect_status 1
 expect_deletes
@@ -738,7 +910,7 @@ expect_output "--max-deletions"
 new_case "the image kept for rollback does not count toward the cap"
 library 1.3.0-SNAPSHOT
 branches dev
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "${stale[@]:0:51}"
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" "${stale[@]:0:51}"
 run_prune
 expect_status 0
 deletes=()
@@ -749,7 +921,7 @@ expect_output "app sha256:old1: keep, newest untagged"
 new_case "a dry run lists the images it would delete, also in the summary"
 library 1.3.0-SNAPSHOT
 branches dev
-image "$(container_version 1 sha256:live 1 0.1.0-SNAPSHOT)" "$(container_version 2 sha256:previous 8)" \
+image "$(container_version 1 sha256:live 1 1.3.0-SNAPSHOT)" "$(container_version 2 sha256:previous 8)" \
     "$(container_version 3 sha256:old 9)"
 summary="$WORK/summary"
 : > "$summary"

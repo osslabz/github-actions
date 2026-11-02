@@ -227,18 +227,22 @@ build pushed to it.
 | `1.3.0-feat-x-SNAPSHOT` | no live branch slugs to `feat-x` the way [snapshot-version](#snapshot-version) slugs a branch name |
 | `1.2.0-SNAPSHOT` | the package holds a release at or after `1.2.0` (`sort -V`) and it is not `current-version` |
 | `1.2.0`, `current-version`, any other shape | never |
-| an image version without a tag | it was created over 7 days ago, no tagged multi-arch index lists it, and a newer such version exists |
-| a tagged image, or one a tagged index lists | never |
+| a tagged image version | every tag is stale by the rows above, the image's own release tags being its releases; a plain snapshot tag before `current-version` (`sort -V`) is stale too |
+| an image version without a tag | it was created over 7 days ago, no kept multi-arch index lists it, and a newer such version exists |
+| an image version a kept index lists | never |
 
 A slug cannot be turned back into a branch name: `feat/x` and `feat-x` share one, so a live
-branch keeps every version its slug matches. When every version of a package is stale the
+branch keeps every version its slug matches. When every version of a Maven package is stale the
 package itself goes, since GitHub refuses to delete a package's last version; a version
 published in between goes with it, restorable for 30 days.
 
-The images a tagged multi-arch index lists come from the registry's manifest of each tagged
-version, read with a pull token from the same classic token. The newest untagged version that
-would otherwise go stays, so the image a build moved a tag away from can still be rolled back
-to. An image package without any tag is left alone.
+No build pulls an old dev image, so an image's plain snapshot tags need no release to go. When
+every tagged version of an image is stale, the newest stays: GitHub refuses to delete an image's
+last tagged version, and an image without tags is never pruned again. The images a kept
+multi-arch index lists come from the registry's manifest of each kept tagged version, read with
+a pull token from the same classic token. The newest untagged version that would otherwise go
+stays, so the image a build moved a tag away from can still be rolled back to. An image package
+without any tag is left alone.
 
 Nothing is deleted when the branch list lacks the default branch, or when more versions are
 stale than the cap of 50. Only this repository's packages are touched. Every decision
@@ -363,7 +367,7 @@ run on `dev` is never cancelled, so two deploys of one snapshot coordinate never
 | `image-build` | `none` | `spring-boot-goal`: in a run that pushes images, the Maven run adds `spring-boot:build-image-no-fork` after its lifecycle phase. `pom-bound`: the pom binds the image build itself; bind it in a profile named in `image-maven-profiles`, or it runs in every build. |
 | `image-names` | empty | The artifactIds whose images are pushed as `ghcr.io/<owner>/<artifactId>:<version>`. Required with an `image-build`. |
 | `image-maven-profiles` | empty | Profiles, comma-separated, that bind a pom-bound image build. Active only in runs that push the image. |
-| `prune-packages` | `delete` | What `dev`'s build does with the Maven versions and untagged images on GitHub Packages that no build asks for again, see [package-prune](#package-prune). `delete` deletes them and needs `packages-token`, `dry-run` logs them, `off` skips the step. Only with `github-packages`. |
+| `prune-packages` | `delete` | What `dev`'s build does with the Maven versions and images on GitHub Packages that no build asks for again, see [package-prune](#package-prune). `delete` deletes them and needs `packages-token`, `dry-run` logs them, `off` skips the step. Only with `github-packages`. |
 | `resolve-from-github-packages` | `true` | The build reads the owner's private packages from GitHub Packages, so Maven gets `packages-token` in every run. `false`: only in runs that publish. |
 | `timeout-minutes` | `30` | The job's time limit. |
 
@@ -406,7 +410,7 @@ The steps, and why each is there:
 | `set-snapshot-version` | [snapshot-version](#snapshot-version), after `setup-jdk`, whose cache key hashes the poms. |
 | `maven-build` | `deploy` in a run that publishes, `verify` otherwise, with the project's `./mvnw` where there is one. `install` is skipped: nothing reads the local repository afterwards, and the project's own artifacts would otherwise fill the Maven cache. `-DdeployAtEnd=true` holds every module's upload until the last module is built, so a multi-module build whose tests fail publishes nothing; Central's publishing plugin already waits on its own. The image is built only in a run that pushes it, for `pom-bound` only when the pom binds it in an `image-maven-profiles` profile: building it elsewhere cost a minute or more per run, and a change that breaks the image first fails in a run that publishes. |
 | `push-images` | Only in runs that publish. Spring Boot names each image `<artifactId>:<version>`; this tags it for `ghcr.io` and pushes it with the job's token. |
-| `prune-packages` | Only on `dev` in a run that publishes to GitHub Packages, unless `prune-packages` is `off`. [package-prune](#package-prune) of Maven versions and untagged images, with `packages-token` or the job's token, keeping the version this run published. Last, so it cannot hold a publish back. `delete` fails the build when the token is not a classic one, or lacks `delete:packages` while something is stale. A dry run never fails the build. |
+| `prune-packages` | Only on `dev` in a run that publishes to GitHub Packages, unless `prune-packages` is `off`. [package-prune](#package-prune) of Maven versions and images, with `packages-token` or the job's token, keeping the version this run published. Last, so it cannot hold a publish back. `delete` fails the build when the token is not a classic one, or lacks `delete:packages` while something is stale. A dry run never fails the build. |
 
 ## release
 

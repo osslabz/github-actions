@@ -62,7 +62,8 @@ on:
       prune-packages:
         description: >-
           `off`, `dry-run` or `delete`: what dev's build does with the package versions on GitHub
-          Packages that no build asks for again: stale Maven snapshots and untagged images.
+          Packages that no build asks for again: stale Maven snapshots, images whose every tag
+          is stale, and untagged images.
           `dry-run` only logs them and never fails the build.
           `delete` needs packages-token to be a classic PAT with delete:packages.
         required: false

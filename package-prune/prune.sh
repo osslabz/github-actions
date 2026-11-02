@@ -10,9 +10,11 @@
 # a whole package also removes a version published between listing and deleting; GitHub keeps
 # it restorable for 30 days.
 #
-# An image (container package) keeps every tagged version and every digest a tagged multi-arch
-# index lists; an untagged version older than seven days goes, except the newest such one, kept
-# to roll back to. A package without any tag is left alone.
+# An image (container package) judges each tag by the same rules, its own release tags being the
+# releases, and also drops a plain snapshot tag before the current version. A version goes once
+# every tag it has is stale; when every tagged version is, the newest stays. Every digest a kept
+# multi-arch index lists stays; an untagged version older than seven days goes, except the newest
+# such one, kept to roll back to. A package without any tag is left alone.
 #
 # Usage: prune.sh --owner <owner> --repository <repo> --default-branch <branch>
 #                 --current-version <version> --mode dry-run|delete [--max-deletions <n>]
@@ -54,6 +56,7 @@ if [[ ! "$current_version" =~ $DEV_SNAPSHOT ]]; then
     echo "--current-version must be a plain x.y.z-SNAPSHOT version, not $current_version" >&2
     exit 2
 fi
+readonly CURRENT_BASE="${current_version%-SNAPSHOT}"
 
 # Must stay identical to snapshot-version/branch-version.sh; test/run.sh checks that it is.
 slug_of() {
@@ -63,10 +66,15 @@ slug_of() {
     printf '%s\n' "${slug%-}"
 }
 
+# at_or_before <a> <b>: whether version a sorts at or before version b.
+at_or_before() {
+    printf '%s\n' "$1" "$2" | sort -V -C
+}
+
 released_at_or_after() {
     local base="$1" releases="$2" release
     while IFS= read -r release; do
-        if [ -n "$release" ] && printf '%s\n' "$base" "$release" | sort -V -C; then
+        if [ -n "$release" ] && at_or_before "$base" "$release"; then
             return 0
         fi
     done <<< "$releases"
@@ -94,6 +102,36 @@ verdict() {
         fi
     else
         echo "keep, unrecognised version"
+    fi
+}
+
+# tag_verdict <tag> <the image's releases>: the verdict, except that a plain snapshot before the
+# current version is stale, since no build pulls an old dev image.
+tag_verdict() {
+    if [[ "$1" =~ $DEV_SNAPSHOT ]] && [ "${BASH_REMATCH[1]}" != "$CURRENT_BASE" ] \
+        && at_or_before "${BASH_REMATCH[1]}" "$CURRENT_BASE"; then
+        echo "delete, older than the current version"
+    else
+        verdict "$1" "$2"
+    fi
+}
+
+# tags_verdict <tags, comma-separated> <the image's releases>: keeps a version while any of its
+# tags is kept.
+tags_verdict() {
+    local tag decision kept="" stale=""
+    while IFS= read -r tag; do
+        decision="$(tag_verdict "$tag" "$2")"
+        if [[ "$decision" == keep,* ]]; then
+            kept+="${kept:+, }$tag (${decision#keep, })"
+        else
+            stale+="${stale:+, }$tag (${decision#delete, })"
+        fi
+    done < <(tr ',' '\n' <<< "$1")
+    if [ -n "$kept" ]; then
+        echo "keep, tagged $kept${stale:+; stale: $stale}"
+    else
+        echo "delete, every tag stale: $stale"
     fi
 }
 
@@ -188,6 +226,7 @@ done <<< "$packages"
 containers="$(gh api --paginate "$packages_path?package_type=container" \
     | jq -r --arg repo "$repository" '.[] | select(.repository.name == $repo) | .name')"
 cutoff="$(date -u -d "$UNTAGGED_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ)"
+declare -A tagged_decision
 while IFS= read -r image; do
     [ -n "$image" ] || continue
     # One line per version, newest first: id, digest, creation time, tags (comma-separated, empty
@@ -201,26 +240,41 @@ while IFS= read -r image; do
         echo "$image: keep every version, none is tagged"
         continue
     fi
+    releases="$(cut -f 4 "$work/image-versions" | tr ',' '\n' | grep -E "$RELEASE" || true)"
     token="$(registry_token "$image")"
-    : > "$work/referenced"
-    while IFS=$'\t' read -r _ digest _ tags; do
+    tagged_decision=()
+    newest_tagged=""
+    while IFS=$'\t' read -r id _ _ tags; do
         if [ -n "$tags" ]; then
+            tagged_decision[$id]="$(tags_verdict "$tags" "$releases")"
+            newest_tagged="${newest_tagged:-$id}"
+        fi
+    done < "$work/image-versions"
+    # GitHub refuses to delete an image's last tagged version, and an image left without tags
+    # would never be pruned again.
+    if ! printf '%s\n' "${tagged_decision[@]}" | grep -q '^keep,'; then
+        tagged_decision[$newest_tagged]="keep, newest tagged, ${tagged_decision[$newest_tagged]#delete, }"
+    fi
+    : > "$work/referenced"
+    while IFS=$'\t' read -r id digest _ tags; do
+        if [ -n "$tags" ] && [[ "${tagged_decision[$id]}" == keep,* ]]; then
             index_children "$image" "$token" "$digest" >> "$work/referenced"
         fi
     done < "$work/image-versions"
     rollback_kept=false
     while IFS=$'\t' read -r id digest created tags; do
-        if [ -n "$tags" ]; then
-            decision="keep, tagged $tags"
-        elif grep -qxF -- "$digest" "$work/referenced"; then
-            decision="keep, a tagged index lists it"
+        # Before the tags: a platform image can carry a stale tag of its own from an earlier push.
+        if grep -qxF -- "$digest" "$work/referenced"; then
+            decision="keep, a kept index lists it"
+        elif [ -n "$tags" ]; then
+            decision="${tagged_decision[$id]}"
         elif [[ "$created" > "$cutoff" ]]; then
             decision="keep, created less than $UNTAGGED_DAYS days ago"
         elif ! $rollback_kept; then
             decision="keep, newest untagged"
             rollback_kept=true
         else
-            decision="delete, untagged, older than $UNTAGGED_DAYS days and in no tagged index"
+            decision="delete, untagged, older than $UNTAGGED_DAYS days and in no kept index"
         fi
         echo "$image $digest: $decision"
         if [[ "$decision" == delete,* ]]; then

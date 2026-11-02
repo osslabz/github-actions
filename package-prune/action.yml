@@ -2,7 +2,8 @@ name: package-prune
 description: >
   Deletes the package versions a repository published to GitHub Packages that no build will ask
   for again: a Maven branch snapshot once its branch is gone, a plain snapshot once it is
-  released, an untagged image a week after it was pushed. GitHub bills both.
+  released, an image once each of its tags is stale by those rules, an untagged image a week
+  after it was pushed. GitHub bills both.
 
 inputs:
   current-version:
